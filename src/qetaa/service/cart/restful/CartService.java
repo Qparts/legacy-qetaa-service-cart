@@ -860,7 +860,7 @@ public class CartService {
 	@Path("wire-notification")
 	public Response getNumberWireTransfers() {
 		try {
-			String jpql = "select count(b) from WireTransfer b where b.status = :value0)";
+			String jpql = "select count(b) from WireTransfer b where b.status = :value0";
 			Long count = dao.findJPQLParams(Long.class, jpql, 'W');
 			return Response.status(200).entity(count).build();
 		} catch (Exception ex) {
