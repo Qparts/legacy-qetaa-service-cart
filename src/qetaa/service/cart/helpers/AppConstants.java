@@ -1,13 +1,13 @@
 package qetaa.service.cart.helpers;
 
 public class AppConstants {
-	private static final String CUSTOMER_SERVICE = "http://localhost:8081/service-qetaa-customer/rest/";
-	private static final String USER_SERVICE = "http://localhost:8081/service-qetaa-user/rest/";
-	private static final String VENDOR_SERVICE = "http://localhost:8081/service-qetaa-vendor/rest/";
-	private static final String VEHICLE_SERVICE = "http://localhost:8081/service-qetaa-vehicle/rest/";
-	private static final String PAYMENT_SERVICE = "http://localhost:8081/service-qetaa-payment/rest/";
-	private static final String PRODUCT_SERVICE = "http://localhost:8081/service-qetaa-product/rest/";
-	private final static String PROMOTION_SERVICE = "http://localhost:8081/service-qetaa-vendor/rest/promotion/";
+	private static final String CUSTOMER_SERVICE = "http://localhost:8080/service-qetaa-customer/rest/";
+	private static final String USER_SERVICE = "http://localhost:8080/service-qetaa-user/rest/";
+	private static final String VENDOR_SERVICE = "http://localhost:8080/service-qetaa-vendor/rest/";
+	private static final String VEHICLE_SERVICE = "http://localhost:8080/service-qetaa-vehicle/rest/";
+	private static final String PAYMENT_SERVICE = "http://localhost:8080/service-qetaa-payment/rest/";
+	private static final String PRODUCT_SERVICE = "http://localhost:8080/service-qetaa-product/rest/";
+	private final static String PROMOTION_SERVICE = "http://localhost:8080/service-qetaa-vendor/rest/promotion/";
 	
 	public static final String CUSTOMER_MATCH_TOKEN = CUSTOMER_SERVICE + "match-token";
 	public static final String USER_MATCH_TOKEN = USER_SERVICE + "match-token";
