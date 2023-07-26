@@ -96,12 +96,12 @@ public class AsyncService {
 				sendSms(cart.getCustomerId(), cart.getId(), text, "part-paid", authHeader);
 			}
 			//create purchase payment
-			createPurchaseOrder(cart.getId(), authHeader);	
+			createPurchaseOrder(cart.getId(), authHeader);
 		}
 	}
-	
-	
-	private void createPurchaseOrder(long cartId, String authHeader) {		
+
+
+	private void createPurchaseOrder(long cartId, String authHeader) {
 		List<Object> vendors = dao.getNative("select b.vendor_id, sum(b.cost_price * b.approved_quantity) from crt_parts_item_approved b where b.cart_id = "+cartId+" group by b.vendor_id");
 		if(!vendors.isEmpty()) {
 			List<PurchaseOrderContract> contracts = new ArrayList<>();
@@ -115,20 +115,26 @@ public class AsyncService {
 				contract.setAmount(sum.doubleValue());
 				contracts.add(contract);
 			}
-			this.postSecuredRequest(AppConstants.POST_PURCHASE_ORDER, contracts, authHeader);	
+			this.postSecuredRequest(AppConstants.POST_PURCHASE_ORDER, contracts, authHeader);
 		}
 	}
 
 	private long getAddressId(PartsOrder partsOrder, String authHeader) {
+		System.out.println("Getting address id for parts order");
 		if (partsOrder.getAddressId() != 0) {
+			System.out.println("there is already address id " + partsOrder.getAddressId());
 			return partsOrder.getAddressId();
 		} else {
-			Response r = this.postSecuredRequest(AppConstants.CREATE_CUSTOMER_ADDRESS, partsOrder.getAddress(),
-					authHeader);
+			System.out.println("Calling custoemr service to create address");
+			Response r = this.postSecuredRequest(AppConstants.CREATE_CUSTOMER_ADDRESS, partsOrder.getAddress(), authHeader);
+			System.out.println("response from customer service " + r.getStatus());
 			if (r.getStatus() == 200) {
+				System.out.println("found address  id");
 				return r.readEntity(Long.class);
-			} else
+			} else {
+				System.out.println("Returning 0");
 				return 0;
+			}
 		}
 	}
 
@@ -150,7 +156,7 @@ public class AsyncService {
 			} else {
 				approved.setApprovedQuantity(q);
 			}
-			
+
 			QuotationVendorItem qvi = dao.find(QuotationVendorItem.class, qApprovedItems.get(index).getVendorItemId());
 			approved.setVendorId(qvi.getVendorId());
 			approved.setItemNumber(qvi.getItemNumber());
@@ -213,8 +219,8 @@ public class AsyncService {
 			// log!!
 		}
 	}
-	
-	
+
+
 	@Asynchronous
 	public void postQuotationCreationForFinders(Quotation qo, String authHeader) {
 		try {
@@ -251,7 +257,7 @@ public class AsyncService {
 			return new ArrayList<>();
 		}
 	}
-	
+
 	private List<Integer> getFinderIds(int makeId, String authHeader){
 		Response r = this.getSecuredRequest(AppConstants.getFinderIds(makeId), authHeader);
 		if(r.getStatus() == 200) {
@@ -310,7 +316,7 @@ public class AsyncService {
 			sendSmsWithAppend(c.getCustomerId(), c.getId(), smsText, "quotation-ready", authHeader);
 		}
 	}
-	
+
 	private void sendTestWorkshopPromoCodeSms(Cart cart, String authHeader) {
 		if(cart.getCityId() == 2 || cart.getCityId() == 3 || cart.getCityId() == 9) {
 			Response r = this.getSecuredRequest(AppConstants.getTestWorkshopPromoCode(cart.getId(), cart.getCustomerId(), cart.getCityId()), authHeader);
@@ -325,7 +331,7 @@ public class AsyncService {
 				sendSms(cart.getCustomerId(), cart.getId(), smsText, "workshop-promocode", authHeader);
 			}
 		}
-		
+
 	}
 
 	private void sendSmsWithAppend(long customerId, long cartId, String text, String purpose, String authHeader) {
