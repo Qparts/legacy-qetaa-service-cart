@@ -22,7 +22,8 @@ import java.util.stream.Collectors;
 
 import javax.imageio.ImageIO;
 
-import sun.misc.BASE64Decoder;
+import org.jboss.security.Base64Encoder;
+import java.util.Base64;;
 
 public class Helper {
 	public static int getRandomInteger(int min, int max) {
@@ -113,8 +114,7 @@ public class Helper {
 		String imageString = base64Image.split(",")[1];
 		BufferedImage image = null;
 		byte[] imageBytes;
-		BASE64Decoder decoder = new BASE64Decoder();
-		imageBytes = decoder.decodeBuffer(imageString);
+		imageBytes = Base64.getDecoder().decode(imageString);
 		ByteArrayInputStream bis = new ByteArrayInputStream(imageBytes);
 		image = ImageIO.read(bis);
 		bis.close();
@@ -134,8 +134,7 @@ public class Helper {
 		String imageString = base64Image.split(",")[1];
 		BufferedImage image = null;
 		byte[] imageBytes;
-		BASE64Decoder decoder = new BASE64Decoder();
-		imageBytes = decoder.decodeBuffer(imageString);
+		imageBytes = Base64.getDecoder().decode(imageString);
 		ByteArrayInputStream bis = new ByteArrayInputStream(imageBytes);
 		image = ImageIO.read(bis);
 		bis.close();

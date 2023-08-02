@@ -362,7 +362,7 @@ public class DAO {
 			Date d = (Date) val;
 			Calendar c = Calendar.getInstance();
 			c.setTime(d);
-			q.setParameter(name, c, TemporalType.TIMESTAMP);
+			q.setParameter(name, c.getTime(), TemporalType.TIMESTAMP);
 		}
 	}
 
