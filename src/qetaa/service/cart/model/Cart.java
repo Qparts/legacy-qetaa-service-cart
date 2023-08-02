@@ -20,7 +20,7 @@ import qetaa.service.cart.model.quotation.Quotation;
 import qetaa.service.cart.model.quotation.contract.ApprovedItem;
 
 @Table(name="crt_cart")
-@Entity 
+@Entity
 public class Cart implements Serializable{
 
 	private static final long serialVersionUID = 1L;
@@ -63,26 +63,41 @@ public class Cart implements Serializable{
 	private boolean vinImage;
 	@Column(name="promotion_code")
 	private Integer promotionCode;
-	
-	
+	@Column(name="customer_vehicle_id")
+	private Long customerVehicleId;
+
 	@Transient
 	private List<Quotation> quotations;
 	@Transient
 	private Map<String,Object> customer;
 	@Transient
 	private Map<String,Object> modelYear;
-	
+
 	@Transient
 	private List<CartItem> cartItems;
-	
+
 	@Transient
 	private List<CartReview> reviews;
-	
+
 	@Transient
 	private List<ApprovedItem> approvedItems;
-	
-	
-	
+
+	@Transient
+	private CartAssignment activeAssignment;
+
+
+	public CartAssignment getActiveAssignment() {
+		return activeAssignment;
+	}
+	public void setActiveAssignment(CartAssignment activeAssignment) {
+		this.activeAssignment = activeAssignment;
+	}
+	public Long getCustomerVehicleId() {
+		return customerVehicleId;
+	}
+	public void setCustomerVehicleId(Long customerVehicleId) {
+		this.customerVehicleId = customerVehicleId;
+	}
 	public List<CartReview> getReviews() {
 		return reviews;
 	}
@@ -222,11 +237,12 @@ public class Cart implements Serializable{
 	public void setPromotionCode(Integer promotionCode) {
 		this.promotionCode = promotionCode;
 	}
-	
-	
-	
-	
-	
-	
-	 	
+
+
+
+
+
+
+
+
 }

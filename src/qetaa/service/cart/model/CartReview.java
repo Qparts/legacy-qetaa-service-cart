@@ -20,7 +20,7 @@ import javax.persistence.Transient;
 public class CartReview implements Serializable{
 
 	private static final long serialVersionUID = 1L;
-	
+
 	@Id
 	@SequenceGenerator(name = "crt_review_id_seq_gen", sequenceName = "crt_review_id_seq", initialValue=1, allocationSize = 1)
 	@GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "crt_review_id_seq_gen")
@@ -45,21 +45,25 @@ public class CartReview implements Serializable{
 	private Double alternativePrice;
 	@Column(name="bought_from")
 	private String boughtFrom;
-	@Column(name="bought_city")
+	@Column(name="bought_City")
 	private Integer boughtCity;
 	@Temporal(TemporalType.DATE)
 	@Column(name="reminder_date")
 	private Date reminderDate;
 	@Column(name="stage")
 	private Integer stage;//1 = no vin, 2 = quotation, 3 = follow up, 4 = wire transfer, 5 = open archived or closed
-	
+	@Column(name="visible_to_customer")
+	private boolean visibleToCustomer;
+
 	@Transient
 	private Map<String,Object> reviewer;
-	
-	
 
-	
-	
+	public boolean isVisibleToCustomer() {
+		return visibleToCustomer;
+	}
+	public void setVisibleToCustomer(boolean visibleToCustomer) {
+		this.visibleToCustomer = visibleToCustomer;
+	}
 	public Integer getStage() {
 		return stage;
 	}
@@ -218,7 +222,7 @@ public class CartReview implements Serializable{
 			return false;
 		return true;
 	}
-	
-	
-	
+
+
+
 }

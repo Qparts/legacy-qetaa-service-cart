@@ -21,7 +21,7 @@ import qetaa.service.cart.model.security.AccessMap;
 
 
 @SecuredCustomer
-@Provider 
+@Provider
 @Priority(Priorities.AUTHENTICATION)
 public class AuthenticatorCustomer implements ContainerRequestFilter {
 
@@ -65,7 +65,7 @@ public class AuthenticatorCustomer implements ContainerRequestFilter {
 			throw new NotAuthorizedException("Request authorization failed");
 		}
 	}
-	
+
 	public <T> Response postSecuredRequest(String link, T t, String authHeader) {
 		Builder b = ClientBuilder.newClient().target(link).request();
 		b.header(HttpHeaders.AUTHORIZATION, authHeader);

@@ -34,7 +34,17 @@ public class CartItem implements Serializable{
 	@Column(name="created")
 	@Temporal(TemporalType.TIMESTAMP)
 	private Date created;
-	
+	@Column(name="image_attached")
+	private boolean imageAttached;
+
+
+
+	public boolean isImageAttached() {
+		return imageAttached;
+	}
+	public void setImageAttached(boolean imageAttached) {
+		this.imageAttached = imageAttached;
+	}
 	public long getId() {
 		return id;
 	}
@@ -113,9 +123,9 @@ public class CartItem implements Serializable{
 			return false;
 		return true;
 	}
-	
-	
-	
-	
-	
+
+
+
+
+
 }

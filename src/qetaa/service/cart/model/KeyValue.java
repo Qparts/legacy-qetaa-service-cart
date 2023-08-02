@@ -4,7 +4,7 @@ public class KeyValue {
 
 	private Integer key;
 	private Integer value;
-	
+
 	public Integer getValue() {
 		return value;
 	}
@@ -16,6 +16,6 @@ public class KeyValue {
 	}
 	public void setKey(Integer key) {
 		this.key = key;
-	}	
-	
+	}
+
 }

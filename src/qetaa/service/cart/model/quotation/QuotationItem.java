@@ -23,7 +23,7 @@ public class QuotationItem implements Serializable {
 	@SequenceGenerator(name = "crt_quotation_item_id_seq_gen", sequenceName = "crt_quotation_item_id_seq", initialValue = 1, allocationSize = 1)
 	@GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "crt_quotation_item_id_seq_gen")
 	@Column(name="id")
-	private long id;	
+	private long id;
 	@Column(name="cart_id")
 	private long cartId;
 	@Column(name="quotation_id")
@@ -40,14 +40,21 @@ public class QuotationItem implements Serializable {
 	@Column(name="created")
 	private Date created;
 	@Column(name="status")
-	private char status;
+	private char status;//W = waiting , N = not available, C = completed
 	@Transient
 	private List<QuotationVendorItem> vendorItems;
+	@Transient
+	private List<QuotationItemResponse> quotationItemResponses;
 	
 	
 	
 	
-	
+	public List<QuotationItemResponse> getQuotationItemResponses() {
+		return quotationItemResponses;
+	}
+	public void setQuotationItemResponses(List<QuotationItemResponse> quotationItemResponses) {
+		this.quotationItemResponses = quotationItemResponses;
+	}
 	public char getStatus() {
 		return status;
 	}

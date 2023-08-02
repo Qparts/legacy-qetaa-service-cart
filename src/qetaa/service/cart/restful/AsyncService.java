@@ -1,9 +1,6 @@
 package qetaa.service.cart.restful;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -15,29 +12,32 @@ import javax.ejb.Stateless;
 import javax.ws.rs.client.ClientBuilder;
 import javax.ws.rs.client.Entity;
 import javax.ws.rs.client.Invocation.Builder;
-import javax.ws.rs.core.GenericType;
 import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.Response;
 
+import qetaa.service.cart.apicontract.QuotationCart;
+import qetaa.service.cart.apicontract.QuotationCartItem;
 import qetaa.service.cart.dao.DAO;
 import qetaa.service.cart.helpers.AppConstants;
 import qetaa.service.cart.helpers.Helper;
 import qetaa.service.cart.model.Cart;
-import qetaa.service.cart.model.CartAssignment;
 import qetaa.service.cart.model.CartItem;
-import qetaa.service.cart.model.KeyValue;
+import qetaa.service.cart.model.Wallet;
+import qetaa.service.cart.model.WalletItem;
 import qetaa.service.cart.model.parts.PartsOrder;
 import qetaa.service.cart.model.parts.PartsOrderItem;
 import qetaa.service.cart.model.parts.PartsOrderItemApproved;
-import qetaa.service.cart.model.parts.contract.PurchaseOrderContract;
+import qetaa.service.cart.model.parts.contract.PartsOrderCashOnDelivery;
+import qetaa.service.cart.model.parts.contract.PartsOrderCreditCard;
+import qetaa.service.cart.model.parts.contract.PartsOrderCreditSales;
 import qetaa.service.cart.model.quotation.Quotation;
 import qetaa.service.cart.model.quotation.QuotationItem;
 import qetaa.service.cart.model.quotation.QuotationItemApproved;
+import qetaa.service.cart.model.quotation.QuotationItemResponse;
 import qetaa.service.cart.model.quotation.QuotationVendorItem;
-import qetaa.service.cart.model.quotation.contract.FinalizedItem;
-import qetaa.service.cart.model.quotation.contract.FinalizedItemResponse;
-import qetaa.service.cart.model.quotation.contract.FinalizedItemsHolder;
 import qetaa.service.cart.model.security.WebApp;
+import qetaa.service.cart.serverpush.QuotationsEndpoint;
+import qetaa.service.cart.serverpush.QuotingEndpoint;
 
 @Stateless
 public class AsyncService {
@@ -45,9 +45,245 @@ public class AsyncService {
 	@EJB
 	private DAO dao;
 
+	
+	private void createPartOrder(PartsOrder partsOrder, String authHeader) {
+		long addressId = getAddressId(partsOrder, authHeader);
+		partsOrder.setAppCode(this.getWebAppFromAuthHeader(authHeader).getAppCode());
+		partsOrder.setAddressId(addressId);
+		partsOrder.setCreated(new Date());
+		partsOrder.setStatus('N');
+		PartsOrder pocheck = dao.findCondition(PartsOrder.class, "cartId", partsOrder.getCartId());
+		if (pocheck == null) {
+			dao.persist(partsOrder);
+		}	
+	}
+	
+	private void createPartsOrderItems(PartsOrder partsOrder){
+		for (PartsOrderItem poi : partsOrder.getPartsItems()) {
+			if(poi.getOrderedQuantity() > 0) {
+				poi.setPartsOrderId(partsOrder.getId());
+				QuotationItem qitem = dao.find(QuotationItem.class, poi.getQuotationItemId());
+				poi.setCartId(partsOrder.getCartId());
+				poi.setQuotationId(qitem.getQuotationId());
+				poi.setStatus('N');
+				List<QuotationItemApproved> listqai = dao.getCondition(QuotationItemApproved.class, "quotationItemId", poi.getQuotationItemId());
+				if(!listqai.isEmpty()) {
+					poi.setProductId(listqai.get(0).getProductId());
+				}
+				PartsOrderItem testPoi = dao.findCondition(PartsOrderItem.class, "quotationItemId", poi.getQuotationItemId());
+				if(testPoi == null) {
+					poi = dao.persistAndReturn(poi);
+					int q = poi.getOrderedQuantity();
+					createPartsApprovedItem(poi, partsOrder, q);
+				}
+				
+			}
+			
+			
+		}
+	}
+	
+	private void updateCartAfterPartsOrder(Cart cart, String authHeader){
+		//don't send sms if wire transfer is requested. It should be sent once confirmed
+		if (cart.getStatus() == 'S') {
+			cart.setStatus('P');
+			dao.update(cart);
+			String text = "تم استلام طلبكم بنجاح للطلب رقم ";
+			text += cart.getId();
+			text += " نعمل الان على شحن القطع";
+//			text += " قد يتأخر إرسال الطلب و ذلك لإجازة عيد الأضحى المبارك. و كل عام و انتم بخير ";
+			this.sendSms(cart.getCustomerId(), cart.getId(), text, "part-paid", authHeader);
+		}
+	}
+	
 	@Asynchronous
-	public void someAsyncMethod() {
-		// ...
+	public void payCreditCard(PartsOrderCreditCard pocc, String authHeader) {
+		PartsOrder partsOrder = pocc.getPartsOrder();
+		partsOrder.setCartId(pocc.getCart().getId());
+		createPartOrder(partsOrder, authHeader);
+		createPartsOrderItems(partsOrder);
+		updateCartAfterPartsOrder(pocc.getCart(), authHeader);
+		fundWallet(pocc, authHeader);
+		
+	}
+	
+	@Asynchronous
+	public void payCashOnDelivery(PartsOrderCashOnDelivery pocod, String authHeader) {
+		PartsOrder partsOrder = pocod.getPartsOrder();
+		partsOrder.setCartId(pocod.getCart().getId());
+		createPartOrder(partsOrder, authHeader);
+		createPartsOrderItems(partsOrder);
+		updateCartAfterPartsOrder(pocod.getCart(), authHeader);
+		fundWallet(pocod, authHeader);
+		
+	}
+	
+	@Asynchronous
+	public void payCreditSales(PartsOrderCreditSales pocs, String authHeader) {
+		PartsOrder partsOrder = pocs.getPartsOrder();
+		partsOrder.setCartId(pocs.getCart().getId());
+		createPartOrder(partsOrder, authHeader);
+		createPartsOrderItems(partsOrder);
+		updateCartAfterPartsOrder(pocs.getCart(), authHeader);
+		fundWallet(pocs, authHeader);
+	}
+	
+	private void fundWallet(PartsOrderCreditSales pocs, String authHeader) {
+		Response r = this.postSecuredRequest(AppConstants.POST_NEW_WALLET, pocs.getCart().getId(), authHeader);
+		Long walletId = r.readEntity(Long.class);
+		Wallet wallet = new Wallet();
+//		Map<String,Object> map = new HashMap<String,Object>();
+		wallet.setId(walletId);
+//		map.put("id", walletId);
+		wallet.setCustomerId(pocs.getCart().getCustomerId());
+		wallet.setCustomerName(pocs.getCustomerName());
+//		map.put("customerId", pocs.getCart().getCustomerId());
+//		map.put("customerName", pocs.getCustomerName());
+		wallet.setCartId(pocs.getCart().getId());
+		wallet.setGateway(null);
+//		map.put("cartId", pocs.getCart().getId());
+//		map.put("gateway", null);
+		wallet.setTransactionId(null);
+//		map.put("transactionId", null);
+		wallet.setCcCompany(null);
+//		map.put("ccCompany", null);
+		wallet.setDiscountPercentage(pocs.getDiscountPercentage());
+//		map.put("discountPercentage", pocs.getDiscountPercentage());
+		wallet.setCreditFees(null);
+	//	map.put("creditFees", null);
+		List<WalletItem> witems = initWalletItems(pocs.getPartsOrder().getId(), pocs.getCart(), pocs.getDiscountPercentage());
+		wallet.setWalletItems(witems);
+		//put("walletItems", maps);
+		Response r2 = this.putSecuredRequest(AppConstants.PUT_FUND_WALLET_CREDIT_SALES, wallet, authHeader);
+		if(r2.getStatus() == 201) {
+		}
+		else {
+			System.out.println("wallet not updated " + r2.getStatus());
+		}
+	}
+	
+	private void fundWallet(PartsOrderCashOnDelivery pocod, String authHeader) {
+		Response r = this.postSecuredRequest(AppConstants.POST_NEW_WALLET, pocod.getCart().getId(), authHeader);
+		Long walletId = r.readEntity(Long.class);
+		Wallet wallet = new Wallet();
+		wallet.setId(walletId);
+//		map.put("id", walletId);
+		wallet.setCustomerId(pocod.getCart().getCustomerId());
+//		map.put("customerId", pocod.getCart().getCustomerId());
+		wallet.setCustomerName(pocod.getCustomerName());
+//		map.put("customerName", pocod.getCustomerName());
+		wallet.setCartId(pocod.getCart().getId());
+//		map.put("cartId", pocod.getCart().getId());
+		wallet.setGateway(null);
+//		map.put("gateway", null);
+		wallet.setTransactionId(null);
+//		map.put("transactionId", null);
+		wallet.setCcCompany(null);
+//		map.put("ccCompany", null);
+		wallet.setDiscountPercentage(pocod.getDiscountPercentage());
+//		map.put("discountPercentage", pocod.getDiscountPercentage());
+		wallet.setCreditFees(null);
+	//	map.put("creditFees", null);
+		List<WalletItem> maps = initWalletItems(pocod.getPartsOrder().getId(), pocod.getCart(), pocod.getDiscountPercentage());
+		wallet.setWalletItems(maps);
+		Response r2 = this.putSecuredRequest(AppConstants.PUT_FUND_WALLET_COD, wallet, authHeader);
+		if(r2.getStatus() == 201) {
+		}
+		else {
+			System.out.println("wallet not updated " + r2.getStatus());
+		}
+	}
+	
+	private void fundWallet(PartsOrderCreditCard pocc, String authHeader) {
+		Response r = this.postSecuredRequest(AppConstants.POST_NEW_WALLET, pocc.getCart().getId(), authHeader);
+		Long walletId = r.readEntity(Long.class);
+		Map<String, Object> map = new HashMap<String,Object>();
+		map.put("id", walletId);
+		map.put("customerId", pocc.getCart().getCustomerId());
+		map.put("customerName", pocc.getCustomerName());
+		map.put("cartId", pocc.getCart().getId());
+		map.put("gateway", pocc.getGateway());
+		map.put("transactionId", pocc.getTransactionId());
+		map.put("ccCompany", pocc.getCcCompany());
+		map.put("discountPercentage", pocc.getDiscountPercentage());
+		map.put("creditFees", pocc.getCreditFees());
+		map.put("walletItems", initWalletItems(pocc.getPartsOrder().getId(), pocc.getCart(), pocc.getDiscountPercentage()));
+		Response r2 = this.putSecuredRequest(AppConstants.PUT_FUND_WALLET_CREDIT_CARD, map, authHeader);
+		if(r2.getStatus() == 201) {
+		}
+		else {
+			System.out.println("wallet not updated " + r2.getStatus());
+		}
+	}
+	
+	private List<WalletItem> initWalletItems(long poId, Cart cart, Double discountPercentage) {
+		List<PartsOrderItemApproved> approvedList = dao.getCondition(PartsOrderItemApproved.class, "partsOrderId", poId);
+		List<WalletItem> witems = new ArrayList<>();
+		for(PartsOrderItemApproved approved : approvedList){
+			WalletItem wi = new WalletItem();
+			wi.setCartId(approved.getCartId());
+			wi.setItemDesc(approved.getItemDesc());
+//			map.put("cartId", approved.getCartId());
+//			map.put("itemDesc", approved.getItemDesc());
+			wi.setQuantity(approved.getApprovedQuantity());
+//			map.put("quantity", approved.getApprovedQuantity());
+			wi.setItemNumber(approved.getItemNumber());
+//			map.put("itemNumber", approved.getItemNumber());
+			wi.setItemType('P');
+//			map.put("itemType", 'P');
+			wi.setProductId(approved.getProductId());
+			//map.put("productId", approved.getProductId());
+			wi.setStatus('A');
+//			map.put("status", 'A');
+			wi.setUnitQuotedCost(approved.getCostPrice() / 1.05);
+	//		map.put("unitQuotedCost", approved.getCostPrice() / 1.05);
+			wi.setUnitQuotedCostWv(approved.getCostPrice());
+//			map.put("unitQuotedCostWv", approved.getCostPrice());
+			wi.setUnitSales(approved.getSalesPrice());
+//			map.put("unitSales", approved.getSalesPrice());
+			
+			double vat = approved.getSalesPrice() * cart.getVatPercentage();
+			double discount = approved.getSalesPrice() * discountPercentage;
+			wi.setUnitSalesWv(approved.getSalesPrice() + vat);
+	//		map.put("unitSalesWv", approved.getSalesPrice() + vat);
+			wi.setUnitSalesNet(approved.getSalesPrice() - discount);
+			//map.put("unitSalesNet", approved.getSalesPrice() - discount);
+			wi.setUnitSalesNetWv(approved.getSalesPrice() - discount + vat);
+//			map.put("unitSalesNetWv", approved.getSalesPrice() - discount + vat);
+			wi.setVendorId(approved.getVendorId());
+//			map.put("vendorId", approved.getVendorId());
+			witems.add(wi);
+		}
+		WalletItem wi = new WalletItem();
+		wi.setCartId(cart.getId());
+		wi.setItemDesc("Delivery - رسوم التوصيل");
+//		map.put("cartId", cart.getId());
+//		map.put("itemDesc", "Delivery - رسوم التوصيل");
+		wi.setItemNumber("");
+//		map.put("itemNumber", "");
+		wi.setItemType('D');
+	//	map.put("itemType", 'D');
+		wi.setProductId(null);
+//		map.put("productId", null);
+		wi.setStatus('A');
+//		map.put("status", 'A');
+		wi.setUnitQuotedCost(0);
+		wi.setUnitQuotedCostWv(0);
+//		map.put("unitQuotedCost", 0);
+//		map.put("unitQuotedCostWv", 0);
+		wi.setUnitSales(cart.getDeliveryFees());
+//		map.put("unitSales", cart.getDeliveryFees());
+		double vat = cart.getDeliveryFees() * cart.getVatPercentage();
+		double discount = cart.getDeliveryFees() * discountPercentage;
+		wi.setUnitSalesWv(cart.getDeliveryFees() + vat);
+//		map.put("unitSalesWv", cart.getDeliveryFees() + vat);
+		wi.setUnitSalesNet(cart.getDeliveryFees() - discount);
+//		map.put("unitSalesNet", cart.getDeliveryFees() - discount);
+		wi.setUnitSalesNetWv(cart.getDeliveryFees() - discount + vat);
+//		map.put("unitSalesNetWv", cart.getDeliveryFees() - discount + vat);
+		witems.add(wi);
+//		maps.add(map);
+		return witems;
 	}
 
 	@Asynchronous
@@ -59,7 +295,7 @@ public class AsyncService {
 		partsOrder.setStatus('N');
 		PartsOrder po = dao.findCondition(PartsOrder.class, "cartId", partsOrder.getCartId());
 		if (po == null) {
-			partsOrder = dao.persistAndReturn(partsOrder);
+			dao.persist(partsOrder);
 			double totalCost = 0;
 			for (PartsOrderItem poi : partsOrder.getPartsItems()) {
 				if(poi.getOrderedQuantity() > 0) {
@@ -93,48 +329,27 @@ public class AsyncService {
 				String text = "تم استلام المبلغ بنجاح للطلب رقم ";
 				text += partsOrder.getCartId();
 				text += " نعمل الان على شحن القطع";
+//				text += " قد يتأخر إرسال الطلب و ذلك لإجازة عيد الأضحى المبارك. و كل عام و انتم بخير ";
 				sendSms(cart.getCustomerId(), cart.getId(), text, "part-paid", authHeader);
 			}
 			//create purchase payment
-			createPurchaseOrder(cart.getId(), authHeader);
+		//	createPurchaseOrder(cart.getId(), authHeader);	
 		}
 	}
-
-
-	private void createPurchaseOrder(long cartId, String authHeader) {
-		List<Object> vendors = dao.getNative("select b.vendor_id, sum(b.cost_price * b.approved_quantity) from crt_parts_item_approved b where b.cart_id = "+cartId+" group by b.vendor_id");
-		if(!vendors.isEmpty()) {
-			List<PurchaseOrderContract> contracts = new ArrayList<>();
-			for(Object v : vendors) {
-				Object[] objects = (Object[]) v;
-				Integer vendorId = (Integer) objects[0];
-				BigDecimal sum = (BigDecimal) objects[1];
-				PurchaseOrderContract contract = new PurchaseOrderContract();
-				contract.setVendorId(vendorId);
-				contract.setCartId(cartId);
-				contract.setAmount(sum.doubleValue());
-				contracts.add(contract);
-			}
-			this.postSecuredRequest(AppConstants.POST_PURCHASE_ORDER, contracts, authHeader);
-		}
-	}
+	
+	
+	
 
 	private long getAddressId(PartsOrder partsOrder, String authHeader) {
-		System.out.println("Getting address id for parts order");
 		if (partsOrder.getAddressId() != 0) {
-			System.out.println("there is already address id " + partsOrder.getAddressId());
 			return partsOrder.getAddressId();
 		} else {
-			System.out.println("Calling custoemr service to create address");
-			Response r = this.postSecuredRequest(AppConstants.CREATE_CUSTOMER_ADDRESS, partsOrder.getAddress(), authHeader);
-			System.out.println("response from customer service " + r.getStatus());
+			Response r = this.postSecuredRequest(AppConstants.CREATE_CUSTOMER_ADDRESS, partsOrder.getAddress(),
+					authHeader);
 			if (r.getStatus() == 200) {
-				System.out.println("found address  id");
 				return r.readEntity(Long.class);
-			} else {
-				System.out.println("Returning 0");
+			} else
 				return 0;
-			}
 		}
 	}
 
@@ -156,7 +371,7 @@ public class AsyncService {
 			} else {
 				approved.setApprovedQuantity(q);
 			}
-
+			
 			QuotationVendorItem qvi = dao.find(QuotationVendorItem.class, qApprovedItems.get(index).getVendorItemId());
 			approved.setVendorId(qvi.getVendorId());
 			approved.setItemNumber(qvi.getItemNumber());
@@ -172,6 +387,73 @@ public class AsyncService {
 		return totalCost;
 
 	}
+	
+	
+	
+	public void updateCartToQuotation(Cart cart) {
+		Quotation quotation = new Quotation();
+		quotation.setCartId(cart.getId());
+		quotation.setCreated(new Date());
+		quotation.setCreatedBy(cart.getCreatedBy());
+		quotation.setDeadline(Helper.addDeadline(new Date()));
+		quotation.setStatus('W');
+		dao.persist(quotation);
+		for(CartItem item : cart.getCartItems()) {
+			QuotationItem qi = new QuotationItem();
+			qi.setCartId(cart.getId());
+			qi.setCreated(quotation.getCreated());
+			qi.setCreatedBy(quotation.getCreatedBy());
+			qi.setItemDesc(item.getName());
+			qi.setItemDescAr(null);
+			qi.setQuantity(item.getQuantity());
+			qi.setQuotationId(quotation.getId());
+			qi.setStatus('W');
+			dao.persist(qi);
+		}
+		cart.setStatus('W');
+		dao.update(cart);
+		broadcastToQuotations("new cart," + cart.getId());
+	}
+	
+	@Asynchronous
+	public void postQuotationCartCreation(Cart cart, QuotationCart quotationCart, String authHeader) {
+		try {
+			//write image
+			if(quotationCart.isImageAttached()) {
+				Helper.writeVinImage(quotationCart.getVinImage(), cart.getId(), cart.getCreated());
+			}
+			//write cart items
+			cart.setCartItems(new ArrayList<>());
+			for(QuotationCartItem qcitem : quotationCart.getQuotationCartItems()) {
+				CartItem cartItem = new CartItem();
+				cartItem.setCartId(cart.getId());
+				cartItem.setCreated(cart.getCreated());
+				cartItem.setName(qcitem.getItemName());
+				cartItem.setQuantity(qcitem.getQuantity());
+				cartItem.setImageAttached(qcitem.isImageAttached());
+				dao.persist(cartItem);
+				cart.getCartItems().add(cartItem);
+				if(qcitem.isImageAttached()) {
+					Helper.writeCartItemImage(qcitem.getImage(), cart.getId(), cartItem.getId(), cartItem.getCreated());
+				}
+			}
+			
+			this.updateCartToQuotation(cart);
+			
+			sendEmail(cart.getId());
+			String text = "تم استلام طلبكم ";
+			text = text + "رقم: " + cart.getId() + " ";
+//			text = text + " و سيتم الرد بالتسعير بتاريخ ";
+//			text = text + "28/08/2018";
+	//		text = text + " و ذلك لإجازة عيد الأضحى المبارك, وكل عام و أنتم بخير ";
+			text = text + "نعمل الان على توفير افضل سعر و سيتم التواصل معكم قريبا";
+			sendSms(cart.getCustomerId(), cart.getId(), text, "cart-created", authHeader);
+			
+		}catch(Exception ex) {
+			// log
+			ex.printStackTrace();
+		}
+	}
 
 	@Asynchronous
 	public void postCartCreation(Cart cart, String authHeader) {
@@ -182,8 +464,12 @@ public class AsyncService {
 				item.setCreated(cart.getCreated());
 				dao.persist(item);
 			}
+			
+			if(!cart.isNoVin()) {
+				this.updateCartToQuotation(cart);
+			}
+			
 
-			createRandomAssignment(authHeader, cart.getId(), cart.getCreatedBy(), cart.getStatus());
 			sendEmail(cart.getId());
 			String text = "تم استلام طلبكم ";
 			text = text + "رقم: " + cart.getId() + " ";
@@ -192,147 +478,50 @@ public class AsyncService {
 		} catch (Exception ex) {
 			// log
 			ex.printStackTrace();
-			ex.printStackTrace();
 		}
 	}
-
 	@Asynchronous
-	public void postQuotationCreation(Quotation qo, String authHeader) {
-		try {
-			Cart cart = dao.find(Cart.class, qo.getCartId());
-			List<Integer> vendorIds = getVendorIds(cart.getMakeId(), authHeader);
-			for (Integer vid : vendorIds) {
-				for (QuotationItem qitem : qo.getQuotationItems()) {
-					QuotationVendorItem vitem = new QuotationVendorItem();
-					vitem.setCartId(cart.getId());
-					vitem.setCreated(new Date());
-					vitem.setCreatedBy(qo.getCreatedBy());
-					vitem.setQuantity(qitem.getQuantity());
-					vitem.setQuotationId(qo.getId());
-					vitem.setQuotationItemId(qitem.getId());
-					vitem.setStatus('W');
-					vitem.setVendorId(vid);
-					dao.persist(vitem);
-				}
-			}
-		} catch (Exception ex) {
-			// log!!
-		}
+	public void broadcastToQuotations(String message) {
+		QuotationsEndpoint.broadcast(message);
 	}
-
-
+	
 	@Asynchronous
-	public void postQuotationCreationForFinders(Quotation qo, String authHeader) {
-		try {
-			Cart cart = dao.find(Cart.class, qo.getCartId());
-			List<Integer> finderIds = getFinderIds(cart.getMakeId(), authHeader);
-			for (Integer fid : finderIds) {
-				for (QuotationItem qitem : qo.getQuotationItems()) {
-					QuotationVendorItem vitem = new QuotationVendorItem();
-					vitem.setCartId(cart.getId());
-					vitem.setCreated(new Date());
-					vitem.setCreatedBy(qo.getCreatedBy());
-					vitem.setQuantity(qitem.getQuantity());
-					vitem.setQuotationId(qo.getId());
-					vitem.setQuotationItemId(qitem.getId());
-					vitem.setStatus('W');
-					vitem.setVendorId(0);
-					vitem.setFinderId(fid);
-					vitem.setSentTo('F');
-					dao.persist(vitem);
-				}
-			}
-		} catch (Exception ex) {
-			// log!!
-		}
+	public void sendToQuotingUser(String message, int userId) {
+		QuotingEndpoint.sendToUser(message, userId);
+	}
+	
+	@Asynchronous
+	public void broadcastToQuoting(String message) {
+		QuotingEndpoint.broadcast(message);
 	}
 
-	private List<Integer> getVendorIds(int makeId, String authHeader) {
-		Response r = this.getSecuredRequest(AppConstants.getQuotationVendors(makeId), authHeader);
-		if (r.getStatus() == 200) {
-			List<Integer> vendors = r.readEntity(new GenericType<List<Integer>>() {
-			});
-			return vendors;
-		} else {
-			return new ArrayList<>();
-		}
-	}
-
-	private List<Integer> getFinderIds(int makeId, String authHeader){
-		Response r = this.getSecuredRequest(AppConstants.getFinderIds(makeId), authHeader);
-		if(r.getStatus() == 200) {
-			List<Integer> finders = r.readEntity(new GenericType<List<Integer>>(){
-			});
-			return finders;
-		}
-		return new ArrayList<>();
-	}
 
 	// to be qualified
 	private void sendEmail(long cartId) {
 
 	}
-
+	
 	@Asynchronous
-	public void approveQuotation(String authHeader, FinalizedItemsHolder holder) {
-		Cart cart = dao.find(Cart.class, holder.getCartId());
-		if (cart.getStatus() == 'R' && !holder.getFinalizedItems().isEmpty()) {
-			// this is idempotent because its not creating new order
-			Cart c = dao.find(Cart.class, holder.getCartId());
-			c.setStatus('S');
-			c.setDeliveryFees(holder.getDeliveryFees());
-			c.setSubmitted(new Date());
-			c.setSubmitteBy(holder.getCreatedBy());
-			dao.update(c);
-			for (FinalizedItem finalized : holder.getFinalizedItems()) {
-				for (FinalizedItemResponse response : finalized.getResponses()) {
-					QuotationItemApproved approved = new QuotationItemApproved();
-					approved.setCartId(finalized.getCartId());
-					approved.setCreated(new Date());
-					approved.setCreatedBy(holder.getCreatedBy());
-					approved.setPercentage(response.getSalesPercentage());
-					approved.setQuantity(response.getSelectedQuantity());
-					approved.setQuotationId(finalized.getQuotationId());
-					approved.setQuotationItemId(finalized.getQuotationItemId());
-					approved.setUnitCost(response.getUnitCost());
-					approved.setVendorItemId(response.getQuotationVendorItemId());
-					QuotationVendorItem qvi = dao.findCondition(QuotationVendorItem.class, "id", approved.getVendorItemId());
-					approved.setProductId(qvi.getProductId());
-					// check if approved item exists
-					QuotationItemApproved duplicateCheck = dao.findCondition(QuotationItemApproved.class,
-							"vendorItemId", approved.getVendorItemId());
-					if (duplicateCheck == null) {
-						dao.persist(approved);
-					}
-				}
-			}
-
-			updateScores(c, authHeader);
-			// send sms to customer
-			String smsText = "عزيزنا العميل, تسعيرتكم للطلب رقم ";
-			smsText = smsText + c.getId();
-			smsText = smsText + " جاهزة على الرابط ";
-			smsText = smsText + "qetaa.com/codelg?c=";
-			sendSmsWithAppend(c.getCustomerId(), c.getId(), smsText, "quotation-ready", authHeader);
-		}
+	public void createFinderScore(QuotationItemResponse qir, String desc, String stage, String authHeader, int score) {
+		Map<String,Object> map = new HashMap<String,Object>();
+		map.put("cartId", qir.getCartId());
+		map.put("quotationResponseId", qir.getId());
+		map.put("stage", stage);
+		map.put("userId", qir.getCreatedBy());
+		map.put("score", score);
+		map.put("desc", desc);
+		postSecuredRequest(AppConstants.POST_FINDER_SCORE, map, authHeader);
 	}
-
-	private void sendTestWorkshopPromoCodeSms(Cart cart, String authHeader) {
-		if(cart.getCityId() == 2 || cart.getCityId() == 3 || cart.getCityId() == 9) {
-			Response r = this.getSecuredRequest(AppConstants.getTestWorkshopPromoCode(cart.getId(), cart.getCustomerId(), cart.getCityId()), authHeader);
-			if(r.getStatus() == 200) {
-				String code = r.readEntity(String.class);
-				String smsText = "عزيزنا عميل قطع.كوم, استخدم البروموكود: ";
-				smsText = smsText + code;
-				smsText = smsText + " للحصول على خصم خاص على عمل اليد لطلبك رقم: ";
-				smsText = smsText + cart.getId();
-				smsText = smsText + " لدى ورشة الإكتشاف الجديد بالدمام ";
-				smsText = smsText + " goo.gl/maps/jNcNqFT7Evq ";
-				sendSms(cart.getCustomerId(), cart.getId(), smsText, "workshop-promocode", authHeader);
-			}
-		}
-
+	
+	@Asynchronous
+	public void sendSmsAfterOldWay(String authHeader, Cart cart) {
+		String smsText = "عزيزنا العميل, تسعيرتكم للطلب رقم ";
+		smsText = smsText + cart.getId();
+		smsText = smsText + " جاهزة على الرابط ";
+		smsText = smsText + "qetaa.com/codelg?c=";
+		sendSmsWithAppend(cart.getCustomerId(), cart.getId(), smsText, "quotation-ready", authHeader);
 	}
+	
 
 	private void sendSmsWithAppend(long customerId, long cartId, String text, String purpose, String authHeader) {
 		Map<String, String> map = new HashMap<String, String>();
@@ -404,54 +593,6 @@ public class AsyncService {
 		}
 	}
 
-	private void createRandomAssignment(String authHeader, long cartId, int assignedBy, char stage) {
-		try {
-			List<Integer> users = getActiveAdvisorIds(authHeader);
-			List<KeyValue> keyValues = new ArrayList<>();
-			for (Integer i : users) {
-				List<CartAssignment> list = dao.getCondition(CartAssignment.class, "assignedTo", i);
-				KeyValue kv = new KeyValue();
-				kv.setKey(i);
-				kv.setValue(list.size());
-				keyValues.add(kv);
-			}
-			Collections.sort(keyValues, new Comparator<KeyValue>() {
-				@Override
-				public int compare(KeyValue o1, KeyValue o2) {
-					return o1.getValue().compareTo(o2.getValue());
-				}
-			});
-
-			Integer userId = keyValues.get(0).getKey();
-
-			// deactivate past assignments
-			String sql = "update crt_assignment set status = 'D' where cart_id = " + cartId + " and status = 'A'";
-			dao.updateNative(sql);
-			// Create new assignment
-			CartAssignment assignment = new CartAssignment();
-			assignment.setAssignedBy(assignedBy);
-			assignment.setAssignedDate(new Date());
-			assignment.setAssignedTo(userId);
-			assignment.setCartId(cartId);
-			assignment.setStage(stage);
-			assignment.setStatus('A');
-			dao.persist(assignment);
-		} catch (Exception ex) {
-			// log error
-
-		}
-	}
-
-	private List<Integer> getActiveAdvisorIds(String authHeader) {
-		Response r = getSecuredRequest(AppConstants.GET_ACTIVE_ADVISORS, authHeader);
-		if (r.getStatus() == 200) {
-			List<Integer> usrs = r.readEntity(new GenericType<List<Integer>>() {
-			});
-			return usrs;
-		} else {
-			return new ArrayList<>();
-		}
-	}
 
 	public void sendSms(long customerId, long cartId, String text, String purpose, String authHeader) {
 		try {
@@ -501,5 +642,13 @@ public class AsyncService {
 		Response r = b.post(Entity.entity(t, "application/json"));// not secured
 		return r;
 	}
+	
+	public <T> Response putSecuredRequest(String link, T t, String authHeader) {
+		Builder b = ClientBuilder.newClient().target(link).request();
+		b.header(HttpHeaders.AUTHORIZATION, authHeader);
+		Response r = b.put(Entity.entity(t, "application/json"));// not secured
+		return r;
+	}
+
 
 }

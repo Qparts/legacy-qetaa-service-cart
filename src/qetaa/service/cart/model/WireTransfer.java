@@ -18,7 +18,7 @@ import javax.persistence.Transient;
 @Entity
 @Table(name="crt_wire_transfer")
 public class WireTransfer implements Serializable{
-	
+
 	private static final long serialVersionUID = 1L;
 
 	@Id
@@ -29,7 +29,7 @@ public class WireTransfer implements Serializable{
 	@Column(name="cart_id")
 	private long cartId;
 	@Column(name="customer_id")
-	private long customerId;	
+	private long customerId;
 	@Temporal(TemporalType.TIMESTAMP)
 	@Column(name="created")
 	private Date created;
@@ -42,17 +42,17 @@ public class WireTransfer implements Serializable{
 	@Temporal(TemporalType.TIMESTAMP)
 	@Column(name="confirmed")
 	private Date confirmed;
-	
+
 	@Transient
 	private Cart cart;
-	
+
 	@Transient
 	private Map<String,Object> customer;
-		
-	
-	
-	
-	
+
+
+
+
+
 	public Map<String, Object> getCustomer() {
 		return customer;
 	}
@@ -162,7 +162,7 @@ public class WireTransfer implements Serializable{
 			return false;
 		return true;
 	}
-	
-	
-	
+
+
+
 }

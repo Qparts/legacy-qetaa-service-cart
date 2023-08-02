@@ -19,15 +19,15 @@ import qetaa.service.cart.dao.DAO;
 import qetaa.service.cart.helpers.AppConstants;
 import qetaa.service.cart.model.security.AccessMap;
 
-@SecuredUser 
+@SecuredUser
 @Provider
 @Priority(Priorities.AUTHENTICATION)
 public class AuthenticatorUser implements ContainerRequestFilter {
 
 	@EJB
-	private DAO dao; 
+	private DAO dao;
 
-	@Override 
+	@Override
 	public void filter(ContainerRequestContext requestContext) throws IOException {
 		// GET http autherization header from the request
 		String authHeader = requestContext.getHeaderString(HttpHeaders.AUTHORIZATION);
@@ -51,20 +51,20 @@ public class AuthenticatorUser implements ContainerRequestFilter {
 	}
 
 	public void matchToken(String token, String username, String appSecret, String type, String authHeader) throws NotAuthorizedException{
-		AccessMap map = new AccessMap(username, appSecret, token, ""); 
+		AccessMap map = new AccessMap(username, appSecret, token, "");
 		String link ="";
 		if(!type.equals("U")){
 			throw new NotAuthorizedException("Request authorization failed");// customer not allowed to access this resource
 		}
 		else{
-			link = AppConstants.USER_MATCH_TOKEN; 
+			link = AppConstants.USER_MATCH_TOKEN;
 		}
 		Response r = this.postSecuredRequest(link, map, authHeader);
 		if(r.getStatus() != 200){
 			throw new NotAuthorizedException("Request authorization failed");
 		}
 	}
-	
+
 	public <T> Response postSecuredRequest(String link, T t, String authHeader) {
 		Builder b = ClientBuilder.newClient().target(link).request();
 		b.header(HttpHeaders.AUTHORIZATION, authHeader);

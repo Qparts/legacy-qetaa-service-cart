@@ -372,7 +372,7 @@ public class DAO {
 			q.setParameter(name, d, TemporalType.TIMESTAMP);
 		} else if (val instanceof Calendar) {
 			Calendar c = (Calendar) val;
-			q.setParameter(name, c, TemporalType.TIMESTAMP);
+			q.setParameter(name, c.getTime(), TemporalType.TIMESTAMP);
 		} else {
 			q.setParameter(name, val);
 		}

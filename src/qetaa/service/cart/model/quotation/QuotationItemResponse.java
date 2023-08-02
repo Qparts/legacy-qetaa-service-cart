@@ -1,5 +1,6 @@
 package qetaa.service.cart.model.quotation;
 
+import java.io.Serializable;
 import java.util.Date;
 
 import javax.persistence.Column;
@@ -12,8 +13,9 @@ import javax.persistence.Table;
 
 @Table(name="crt_quotation_item_response")
 @Entity
-public class QuotationItemResponse {
+public class QuotationItemResponse implements Serializable{
 	
+	private static final long serialVersionUID = 1L;
 	@Id
 	@SequenceGenerator(name = "crt_quotation_item_response_id_seq_gen", sequenceName = "crt_quotation_item_response_id_seq", initialValue=1, allocationSize = 1)
 	@GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "crt_quotation_item_response_id_seq_gen")
@@ -21,33 +23,26 @@ public class QuotationItemResponse {
 	private int id;
 	@Column(name="cart_id")
 	private long cartId;
-	@Column(name="quotatuon_id")
+	@Column(name="quotation_id")
 	private long quotationId;
 	@Column(name="quotation_item_id")
 	private long quotationItemId;
 	@Column(name="product_id")
-	private long productId;
+	private Long productId;
+	@Column(name="product_price_id")
+	private Long productPriceId;
 	@Column(name="item_desc")
 	private String desc;
-	@Column(name="item_cost")
-	private Double cost;
-	@Column(name="item_cost_wv")
-	private Double costWv;
 	@Column(name="quantity")
 	private int quantity;
 	@Column(name="status")
 	private char status;//status of the item C = completed, N = not available
-	@Column(name="response_type")
-	private char responseType;//Finder, Vendor
 	@Column(name="created")
 	private Date created;//date of response
 	@Column(name="created_by")
 	private int createdBy;// by vendor_user_id , or finder_id
 	@Column(name="default_percentage")
 	private Double defaultPercentage;
-	@Column(name="vendor_id")
-	private Integer vendorId;
-	
 	
 	
 	public int getId() {
@@ -74,10 +69,10 @@ public class QuotationItemResponse {
 	public void setQuotationItemId(long quotationItemId) {
 		this.quotationItemId = quotationItemId;
 	}
-	public long getProductId() {
+	public Long getProductId() {
 		return productId;
 	}
-	public void setProductId(long productId) {
+	public void setProductId(Long productId) {
 		this.productId = productId;
 	}
 	public String getDesc() {
@@ -86,17 +81,12 @@ public class QuotationItemResponse {
 	public void setDesc(String desc) {
 		this.desc = desc;
 	}
-	public Double getCost() {
-		return cost;
+	
+	public Long getProductPriceId() {
+		return productPriceId;
 	}
-	public void setCost(Double cost) {
-		this.cost = cost;
-	}
-	public Double getCostWv() {
-		return costWv;
-	}
-	public void setCostWv(Double costWv) {
-		this.costWv = costWv;
+	public void setProductPriceId(Long productPriceId) {
+		this.productPriceId = productPriceId;
 	}
 	public int getQuantity() {
 		return quantity;
@@ -110,12 +100,7 @@ public class QuotationItemResponse {
 	public void setStatus(char status) {
 		this.status = status;
 	}
-	public char getResponseType() {
-		return responseType;
-	}
-	public void setResponseType(char responseType) {
-		this.responseType = responseType;
-	}
+	
 	public Date getCreated() {
 		return created;
 	}
@@ -134,14 +119,6 @@ public class QuotationItemResponse {
 	public void setDefaultPercentage(Double defaultPercentage) {
 		this.defaultPercentage = defaultPercentage;
 	}
-	public Integer getVendorId() {
-		return vendorId;
-	}
-	public void setVendorId(Integer vendorId) {
-		this.vendorId = vendorId;
-	}
-	
-	
 	
 	
 	

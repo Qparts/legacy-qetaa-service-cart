@@ -6,8 +6,10 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.GregorianCalendar;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import javax.ejb.EJB;
 import javax.ws.rs.Consumes;
@@ -39,29 +41,28 @@ import qetaa.service.cart.model.Cart;
 import qetaa.service.cart.model.CartAssignment;
 import qetaa.service.cart.model.CartItem;
 import qetaa.service.cart.model.CartReview;
-import qetaa.service.cart.model.KeyValue;
 import qetaa.service.cart.model.WireTransfer;
 import qetaa.service.cart.model.parts.PartsOrder;
 import qetaa.service.cart.model.parts.PartsOrderItem;
 import qetaa.service.cart.model.parts.PartsOrderItemApproved;
 import qetaa.service.cart.model.parts.PartsOrderItemReturn;
 import qetaa.service.cart.model.parts.contract.CompletedCart;
-import qetaa.service.cart.model.parts.contract.PartCollectionItem;
+import qetaa.service.cart.model.parts.contract.PartsOrderCashOnDelivery;
+import qetaa.service.cart.model.parts.contract.PartsOrderCreditCard;
+import qetaa.service.cart.model.parts.contract.PartsOrderCreditSales;
 import qetaa.service.cart.model.quotation.Quotation;
 import qetaa.service.cart.model.quotation.QuotationItem;
 import qetaa.service.cart.model.quotation.QuotationItemApproved;
 import qetaa.service.cart.model.quotation.QuotationItemResponse;
 import qetaa.service.cart.model.quotation.QuotationVendorItem;
-import qetaa.service.cart.model.quotation.contract.AdvisorCarts;
 import qetaa.service.cart.model.quotation.contract.ApprovedItem;
-import qetaa.service.cart.model.quotation.contract.FinalizedItem;
-import qetaa.service.cart.model.quotation.contract.FinalizedItemResponse;
-import qetaa.service.cart.model.quotation.contract.FinalizedItemsHolder;
 import qetaa.service.cart.model.quotation.contract.ManualQuotationVendor;
 import qetaa.service.cart.model.quotation.contract.VendorItemContract;
 import qetaa.service.cart.model.security.WebApp;
 
 @Path("/")
+@Consumes(MediaType.APPLICATION_JSON)
+@Produces(MediaType.APPLICATION_JSON)
 public class CartService {
 	@EJB
 	private DAO dao;
@@ -76,6 +77,21 @@ public class CartService {
 	@GET
 	public void test() {
 
+	}
+
+	@GET
+	@SecuredCustomer
+	@Path("cart-status/{param}")
+	public Response getCustomerCartStatus(@PathParam(value = "param") long cartId) {
+		try {
+			Cart cart = dao.find(Cart.class, cartId);
+			if (cart == null) {
+				return Response.status(404).build();
+			}
+			return Response.status(200).entity(cart.getStatus()).build();
+		} catch (Exception ex) {
+			return Response.status(500).build();
+		}
 	}
 
 	// check idempotency of a cart
@@ -113,46 +129,200 @@ public class CartService {
 	@SecuredUser
 	@POST
 	@Path("quotation-item-response")
-	@Consumes(MediaType.APPLICATION_JSON)
-	@Produces(MediaType.APPLICATION_JSON)
-	public Response createQuotationItemResponse(@HeaderParam("Authorization") String authHeader,
-			List<Map<String, Object>> list) {
+	public Response createQuotationItemResponse(@HeaderParam("Authorization") String authHeader, QuotationItem qitem) {
 		try {
-			for (Map<String, Object> map : list) {
-				Long cartId = (Long) map.get("cartId");
-				Double cost = (Double) map.get("cost");
-				Double costWv = (Double) map.get("costWv");
-				Integer createdBy = (Integer) map.get("createdBy");
-				String desc = (String) map.get("desc");
-				Long productId = (Long) map.get("productId");
-				Integer quantity = (Integer) map.get("quantity");
-				Long quotationId = (Long) map.get("quotationId");
-				Long quotationItemId = (Long) map.get("quotationItemId");
-				Integer vendorId = (Integer) map.get("vendorId");
-				Double percentage = (Double) map.get("percentage");
-
-				QuotationItemResponse res = new QuotationItemResponse();
-				res.setCartId(cartId);
-				res.setCost(cost);
-				res.setCostWv(costWv);
-				res.setDefaultPercentage(percentage);
-				res.setCreated(new Date());
-				res.setCreatedBy(createdBy);
-				res.setDesc(desc);
-				res.setProductId(productId);
-				res.setQuantity(quantity);
-				res.setQuotationId(quotationId);
-				res.setQuotationItemId(quotationItemId);
-				res.setResponseType('F');// response from finder
-				res.setVendorId(vendorId);// price from which vendor
-
-				if (productId != null && productId != 0) {
-					res.setStatus('C');
-				} else {
-					res.setStatus('N');// Not found
-				}
-				dao.persist(res);
+			if (qitem.getStatus() == 'N') {
+				dao.update(qitem);
 			}
+			for (QuotationItemResponse qir : qitem.getQuotationItemResponses()) {
+				if (qir.getId() == 0) {
+					// new quotaiton item
+					String jpql = "select b from QuotationItemResponse b where b.quotationItemId =:value0 and b.productId = :value1";
+					List<QuotationItemResponse> checkResponses = dao.getJPQLParams(QuotationItemResponse.class, jpql,
+							qir.getQuotationItemId(), qir.getProductId());
+					if (!checkResponses.isEmpty()) {
+						return Response.status(429).build();
+					}
+					qir.setCreated(new Date());
+					dao.persist(qir);
+					if (qir.getStatus() == 'C') {
+						this.async.createFinderScore(qir, "Product number and price found", "quoting", authHeader, 3);
+					} else if (qir.getStatus() == 'I') {
+						this.async.createFinderScore(qir, "Product number found", "quoting", authHeader, 2);
+					} else if (qir.getStatus() == 'N') {
+						this.async.createFinderScore(qir, "Product not available", "quoting", authHeader, 0);
+					}
+				} else {
+					// already submitted before
+					dao.update(qir);
+					if (qir.getStatus() == 'C') {
+						this.async.createFinderScore(qir, "Price found", "quoting", authHeader, 1);
+					} else if (qir.getStatus() == 'N') {
+						this.async.createFinderScore(qir, "Product Found but price is not available", "quoting",
+								authHeader, 1);
+					}
+
+				}
+			}
+			// check for completion
+			checkForQuotationItemCompletion(authHeader, qitem.getId());
+			return Response.status(201).build();
+		} catch (Exception ex) {
+			ex.printStackTrace();
+			return Response.status(500).build();
+		}
+	}
+
+	// check if quotation item is responded
+	private void checkForQuotationItemCompletion(String authHeader, long qiId) {
+		// check for completed
+		String jpql = "select b from QuotationItemResponse b where b.quotationItemId =:value0 and b.status =:value1";
+		List<QuotationItemResponse> completed = dao.getJPQLParams(QuotationItemResponse.class, jpql, qiId, 'C');
+		if (!completed.isEmpty()) {
+			QuotationItem qi = dao.find(QuotationItem.class, qiId);
+			qi.setStatus('C');
+			dao.update(qi);
+			checkForQuotationCompletion(authHeader, qi.getQuotationId());
+		} else {
+			// item not completed, check if unavailable response exists
+			String jpql2 = "select b from QuotationItemResponse b where b.quotationItemId =:value0 and b.status =:value1";
+			List<QuotationItemResponse> notAvailable = dao.getJPQLParams(QuotationItemResponse.class, jpql2, qiId, 'N');
+			if (!notAvailable.isEmpty()) {
+				QuotationItem qi = dao.find(QuotationItem.class, qiId);
+				qi.setStatus('N');// not available
+				dao.update(qi);
+				checkForQuotationCompletion(authHeader, qi.getQuotationId());
+			}
+
+		}
+	}
+
+	// check if all quotation items completed or not available
+	private void checkForQuotationCompletion(String authHeader, long quotationId) {
+		List<QuotationItem> qis = dao.getTwoConditions(QuotationItem.class, "quotationId", "status", quotationId, 'W');
+		if (qis.isEmpty()) {
+			Quotation q = dao.find(Quotation.class, quotationId);
+			q.setStatus('C');
+			dao.update(q);
+			checkForCartReadyForSubmission(authHeader, q.getCartId());
+		}
+
+	}
+
+	private void checkForCartReadyForSubmission(String authHeader, long cartId) {
+		List<Quotation> all = dao.getCondition(Quotation.class, "cartId", cartId);
+		List<Quotation> completed = dao.getTwoConditions(Quotation.class, "cartId", "status", cartId, 'C');
+		if (all.size() == completed.size()) {
+			autoApproveCartOldWay(authHeader, cartId);
+		}
+	}
+
+	public void autoApproveCartOldWay(String authHeader, long cartId) {
+		// completed responses
+		List<QuotationItemResponse> qirs = dao.getTwoConditions(QuotationItemResponse.class, "status", "cartId", 'C',
+				cartId);
+		for (QuotationItemResponse qir : qirs) {
+			// 1- create vendor item
+			QuotationVendorItem qvi = prepareVendorItem(qir, authHeader);
+			// check if it exists
+			QuotationVendorItem checkqvi = dao.findCondition(QuotationVendorItem.class, "quotationItemId",
+					qir.getQuotationItemId());
+			if (checkqvi == null) {
+				dao.persist(qvi);
+				createApporvedItem(qvi);
+			}
+		}
+		Cart cart = dao.find(Cart.class, cartId);
+		if (!qirs.isEmpty()) {
+			cart.setDeliveryFees(35);
+			cart.setStatus('S');
+			cart.setSubmitted(new Date());
+			cart.setSubmitteBy(1);
+			dao.update(cart);
+			async.sendSmsAfterOldWay(authHeader, cart);
+			async.broadcastToQuotations("submit cart," + cart.getId());
+		} else {
+			// quotation completed but cart does not have items! set as ready for submission
+			// for archiving!
+			cart.setStatus('R');// all items not available
+			dao.update(cart);
+			async.broadcastToQuotations("not available cart," + cart.getId());
+		}
+		completeCartAssignment(cart.getId());
+	}
+
+	private void assignCart(Cart cart, int userId) {
+		CartAssignment ca = new CartAssignment();
+		ca.setAssignedBy(userId);
+		ca.setAssignedDate(new Date());
+		ca.setAssignedTo(userId);
+		ca.setCartId(cart.getId());
+		ca.setCompletedDate(null);
+		ca.setStage(cart.getStatus());
+		ca.setStatus('A');
+		dao.persist(ca);
+	}
+
+	private void completeCartAssignment(long cartId) {
+		CartAssignment ca = dao.findTwoConditions(CartAssignment.class, "cartId", "status", cartId, 'A');
+		if (ca != null) {
+			Cart c = dao.find(Cart.class, cartId);
+			ca.setCompletedDate(new Date());
+			ca.setStage(c.getStatus());
+			ca.setStatus('C');
+			dao.update(ca);
+		}
+	}
+
+	private QuotationVendorItem prepareVendorItem(QuotationItemResponse qir, String authHeader) {
+		QuotationVendorItem qvi = new QuotationVendorItem();
+		qvi.setCartId(qir.getCartId());
+		qvi.setCreated(qir.getCreated());
+		qvi.setFinderId(qir.getCreatedBy());
+		qvi.setCreatedBy(qir.getCreatedBy());
+		qvi.setItemDesc(qir.getDesc());
+		qvi.setProductId(qir.getProductId());
+		qvi.setQuantity(qir.getQuantity());
+		qvi.setQuotationId(qir.getQuotationId());
+		qvi.setQuotationItemId(qir.getQuotationItemId());
+		qvi.setResponded(qir.getCreated());
+		qvi.setSalesPercentage(qir.getDefaultPercentage());
+		qvi.setStatus('C');
+		Response r = this.getSecuredRequest(AppConstants.getProductAndPriceInfo(qir.getProductPriceId()), authHeader);
+		if (r.getStatus() == 200) {
+			Map<String, Object> map = r.readEntity(Map.class);
+			qvi.setItemNumber((String) map.get("productNumber"));
+			qvi.setItemCostPrice(((Number) map.get("cost")).doubleValue());
+			qvi.setVendorId(((Number) map.get("vendorId")).intValue());
+		}
+		return qvi;
+	}
+
+	private void createApporvedItem(QuotationVendorItem qvi) {
+		QuotationItemApproved approved = new QuotationItemApproved();
+		approved.setCartId(qvi.getCartId());
+		approved.setCreated(qvi.getCreated());
+		approved.setCreatedBy(qvi.getCreatedBy());
+		approved.setPercentage(qvi.getSalesPercentage());
+		approved.setProductId(qvi.getProductId());
+		approved.setQuantity(qvi.getQuantity());
+		approved.setQuotationId(qvi.getQuotationId());
+		approved.setQuotationItemId(qvi.getQuotationItemId());
+		approved.setUnitCost(qvi.getItemCostPrice());
+		approved.setVendorItemId(qvi.getId());
+		QuotationItemApproved duplicateCheck = dao.findCondition(QuotationItemApproved.class, "vendorItemId",
+				approved.getVendorItemId());
+		if (duplicateCheck == null) {
+			dao.persist(approved);
+		}
+	}
+
+	@SecuredUser
+	@PUT
+	@Path("quotation-item")
+	public Response updateQuotationItem(QuotationItem qi) {
+		try {
+			dao.update(qi);
 			return Response.status(201).build();
 		} catch (Exception ex) {
 			return Response.status(500).build();
@@ -162,13 +332,176 @@ public class CartService {
 	@SecuredUser
 	@POST
 	@Path("quotation-item")
-	@Consumes(MediaType.APPLICATION_JSON)
-	@Produces(MediaType.APPLICATION_JSON)
 	public Response createNewQuotationItem(QuotationItem qi) {
 		try {
+			Quotation q = new Quotation();
+			q.setCartId(qi.getCartId());
+			q.setQuotationItems(new ArrayList<>());
+			q.setCreated(new Date());
+			q.setCreatedBy(qi.getCreatedBy());
+			q.setDeadline(Helper.addDeadline(q.getCreated()));
+			q.setStatus('W');
+			dao.persist(q);
+			qi.setQuotationId(q.getId());
 			qi.setCreated(new Date());
+			qi.setStatus('W');
 			dao.persist(qi);
-			return Response.status(201).entity(qi.getId()).build();
+			q.getQuotationItems().add(qi);
+			return Response.status(200).entity(q).build();
+		} catch (Exception ex) {
+			return Response.status(500).build();
+		}
+
+	}
+
+	@SecuredUser
+	@PUT
+	@Path("unassign")
+	public Response unassignCart(@HeaderParam("Authorization") String authHeader, Map<String, Object> map) {
+		try {
+			Long cartId = ((Number) map.get("cartId")).longValue();
+			Integer userId = ((Number) map.get("userId")).intValue();
+			deactivateActiveAssignment(cartId, userId);
+			async.broadcastToQuotations("assignment changed," + cartId);
+			async.sendToQuotingUser("unassigned cart," + cartId, userId);
+			return Response.status(201).build();
+		} catch (Exception ex) {
+			return Response.status(500).build();
+		}
+	}
+
+	private void deactivateActiveAssignment(long cartId, int userId) {
+		CartAssignment ca = dao.findThreeConditions(CartAssignment.class, "cartId", "assignedTo", "status", cartId,
+				userId, 'A');
+		if (ca != null) {
+			Cart c = dao.find(Cart.class, cartId);
+			ca.setCompletedDate(new Date());
+			ca.setStage(c.getStatus());
+			ca.setStatus('D');
+			dao.update(ca);
+		}
+	}
+
+	@SecuredUser
+	@POST
+	@Path("assign-to-user")
+	public Response assignToUser(@HeaderParam("Authorization") String authHeader, CartAssignment ca) {
+		try {
+			String jpql = "select b from CartAssignment b where b.cartId = :value0 and b.status = :value1";
+			List<CartAssignment> list = dao.getJPQLParams(CartAssignment.class, jpql, ca.getCartId(), 'A');
+			if (!list.isEmpty()) {
+				return Response.status(409).build();
+			}
+			ca.setAssignedDate(new Date());
+			ca.setStatus('A');
+			dao.persist(ca);
+			async.broadcastToQuotations("assignment changed," + ca.getCartId());
+			async.sendToQuotingUser("newly assigned," + ca.getCartId(), ca.getAssignedTo());
+			return Response.status(200).entity(ca).build();
+		} catch (Exception ex) {
+			return Response.status(500).build();
+		}
+	}
+
+	@SecuredUser
+	@POST
+	@Path("assign")
+	public Response requestAssignment(@HeaderParam("Authorization") String authHeader, int userId) {
+		try {
+			List<Integer> makeids = getMakeIds(userId, authHeader);
+			String sql = "select * from crt_cart where status = 'W' and make_id in (0";
+			for (int makeId : makeids) {
+				sql = sql + "," + makeId;
+			}
+			sql = sql + ")";
+			sql = sql + " and id not in (select a.cart_id from crt_assignment a where a.status = 'A')";
+			sql = sql + " and id not in (select c.cart_id from crt_assignment c where c.assigned_to = " + userId
+					+ " and c.status = 'D') ";
+			sql = sql + " order by created asc";
+			List<Cart> carts = dao.getNative(Cart.class, sql);
+			if (!carts.isEmpty()) {
+				Cart randomCart = carts.get(Helper.getRandomInteger(0, carts.size() - 1));
+				assignCart(randomCart, userId);
+				async.broadcastToQuotations("assignment changed," + randomCart.getId());
+			} else {
+				sql = "select * from crt_cart where status = 'W' and id not in "
+						+ "(select a.cart_id from crt_assignment a where a.status = 'A') order by created asc";
+				carts = dao.getNative(Cart.class, sql);
+				if (carts.isEmpty()) {
+					return Response.status(404).build();
+				}
+				Cart randomCart = carts.get(Helper.getRandomInteger(0, carts.size() - 1));
+				this.assignCart(randomCart, userId);
+				async.broadcastToQuotations("assignment changed," + randomCart.getId());
+			}
+
+			return Response.status(201).build();
+		} catch (Exception ex) {
+			return Response.status(500).build();
+		}
+	}
+
+	@Secured
+	@GET
+	@Path("assigned-cart/user/{userId}/cart/{cartId}")
+	public Response getUserAssignedCart(@PathParam(value="userId") int userId, @PathParam(value="cartId") long cartId, @HeaderParam("Authorization") String authHeader) {
+		try {
+			String jpql = "select b from Cart b where b.status = :value0 and b.id in ("
+					+ "select c.cartId from CartAssignment c where c.status = :value1) and b.id = :value2";
+			Cart cart = dao.findJPQLParams(Cart.class, jpql, 'W', 'A', cartId);
+			if(cart == null) {
+				return Response.status(404).build();
+			}
+			cart.setModelYear(getModelYearObjectFromId(cart.getVehicleYear(), authHeader));
+			List<Quotation> qs = dao.getCondition(Quotation.class, "cartId", cart.getId());
+			for (Quotation q : qs) {
+				List<QuotationItem> qis = dao.getCondition(QuotationItem.class, "quotationId", q.getId());
+				q.setQuotationItems(qis);
+				for (QuotationItem qi : qis) {
+					List<QuotationItemResponse> resp = dao.getCondition(QuotationItemResponse.class,
+							"quotationItemId", qi.getId());
+					qi.setQuotationItemResponses(resp);
+				}
+			}
+			cart.setQuotations(qs);
+			setAllCartReviews(cart);
+			
+			return Response.status(200).entity(cart).build();
+			
+		}catch(Exception ex) {
+			return Response.status(500).build();
+		}
+		
+	}
+
+	@Secured
+	@GET
+	@Path("assigned-carts/user/{param}")
+	public Response getUserAssignedCarts(@PathParam(value = "param") int userId,
+			@HeaderParam("Authorization") String authHeader) {
+		try {
+			String jpql = "select b from Cart b where b.status = :value0 and b.id in ("
+					+ "select c.cartId from CartAssignment c where c.status = :value1 and c.assignedTo = :value2)";
+			List<Cart> carts = dao.getJPQLParams(Cart.class, jpql, 'W', 'A', userId);
+			for (Cart cart : carts) {
+				List<CartItem> items = dao.getCondition(CartItem.class, "cartId", cart.getId());
+				cart.setCartItems(items);
+				cart.setModelYear(getModelYearObjectFromId(cart.getVehicleYear(), authHeader));
+				List<Quotation> qs = dao.getCondition(Quotation.class, "cartId", cart.getId());
+				for (Quotation q : qs) {
+					List<QuotationItem> qis = dao.getCondition(QuotationItem.class, "quotationId", q.getId());
+					q.setQuotationItems(qis);
+					for (QuotationItem qi : qis) {
+						List<QuotationItemResponse> resp = dao.getCondition(QuotationItemResponse.class,
+								"quotationItemId", qi.getId());
+						qi.setQuotationItemResponses(resp);
+					}
+				}
+				cart.setQuotations(qs);
+				setAllCartReviews(cart);
+			}
+			return Response.status(200).entity(carts).build();
+
 		} catch (Exception ex) {
 			return Response.status(500).build();
 		}
@@ -177,11 +510,9 @@ public class CartService {
 	@Secured
 	@GET
 	@Path("waiting-quotations/user/{param}")
-	@Produces(MediaType.APPLICATION_JSON)
 	public Response getWaitingQuotations(@PathParam(value = "param") int userId,
 			@HeaderParam("Authorization") String authHeader) {
 		try {
-
 			List<Integer> makeids = getMakeIds(userId, authHeader);
 			String sql = "select * from crt_cart where status = 'W' and make_id in (0";
 			for (int makeId : makeids) {
@@ -191,17 +522,55 @@ public class CartService {
 			List<Cart> carts = dao.getNative(Cart.class, sql);
 			for (Cart cart : carts) {
 				cart.setModelYear(getModelYearObjectFromId(cart.getVehicleYear(), authHeader));
-				List<Quotation> qs = dao.getTwoConditions(Quotation.class, "cartId", "status", cart.getId(), 'W');
+				List<Quotation> qs = dao.getCondition(Quotation.class, "cartId", cart.getId());
 				for (Quotation q : qs) {
-					List<QuotationItem> qis = dao.getTwoConditions(QuotationItem.class, "quotationId", "status",
-							q.getId(), 'W');
+					List<QuotationItem> qis = dao.getCondition(QuotationItem.class, "quotationId", q.getId());
 					q.setQuotationItems(qis);
+					for (QuotationItem qi : qis) {
+						List<QuotationItemResponse> resp = dao.getCondition(QuotationItemResponse.class,
+								"quotationItemId", qi.getId());
+						qi.setQuotationItemResponses(resp);
+					}
 				}
 				cart.setQuotations(qs);
+				setAllCartReviews(cart);
 			}
 			return Response.status(200).entity(carts).build();
 
 		} catch (Exception ex) {
+			return Response.status(500).build();
+		}
+	}
+	
+	@SecuredCustomer
+	@PUT
+	@Path("archive-cart/customer")
+	@Consumes(MediaType.APPLICATION_JSON)
+	public Response archiveCartByCustomer(Cart cart) {
+		try {
+			if (isReviewRedudant(1, cart.getId(), new Date())) {
+
+			}
+			else {
+				closePostponedAndActiveReviews(cart.getId());
+				CartReview review = new CartReview();
+				review.setActionValue('X');
+				review.setCartId(cart.getId());
+				review.setReviewerId(1);
+				review.setReviewText("Closed by Customer");
+				review.setStage(3);
+				review.setStatus('C');
+				review.setVisibleToCustomer(true);
+				review.setCreated(new Date());
+				dao.persist(review);
+				if (review.getActionValue() == 'X') {
+					cart.setStatus('X');
+					dao.update(cart);
+			}
+			
+			}
+			return Response.status(201).build();
+		}catch(Exception ex) {
 			return Response.status(500).build();
 		}
 	}
@@ -216,6 +585,22 @@ public class CartService {
 			dao.update(cart);
 			return Response.status(201).build();
 		} catch (Exception ex) {
+			ex.printStackTrace();
+			return Response.status(500).build();
+		}
+	}
+	
+	@Secured
+	@PUT
+	@Path("cart/vin-added")
+	@Consumes(MediaType.APPLICATION_JSON)
+	public Response updateCartVinAdded(Cart cart) {
+		try {
+			cart.setVin(cart.getVin().toUpperCase());
+			async.updateCartToQuotation(cart);
+			return Response.status(201).build();
+		} catch (Exception ex) {
+			ex.printStackTrace();
 			return Response.status(500).build();
 		}
 	}
@@ -297,10 +682,22 @@ public class CartService {
 		}
 	}
 
+	@SecuredCustomer
+	@GET
+	@Path("reviews/visible/{param}")
+	public Response getVisibleReviews(@PathParam("param") long cartId) {
+		try {
+			List<CartReview> reviews = dao.getTwoConditions(CartReview.class, "cartId", "visibleToCustomer", cartId,
+					true);
+			return Response.status(200).entity(reviews).build();
+		} catch (Exception ex) {
+			return Response.status(500).build();
+		}
+	}
+
 	@SecuredUser
 	@GET
 	@Path("no-vin-carts")
-	@Produces(MediaType.APPLICATION_JSON)
 	public Response getNoVinCarts(@HeaderParam("Authorization") String authHeader) {
 		try {
 
@@ -328,6 +725,13 @@ public class CartService {
 			List<Cart> carts = dao.getJPQLParams(Cart.class, jpql, 'N', 'Q', 'W', 'R', 'A', false);
 			for (Cart cart : carts) {
 				prepareCart(cart, authHeader);
+				// add last assignment
+				String sql = "select b from CartAssignment b where b.cartId = :value0 and b.status = :value1 order by b.assignedDate desc";// newest
+																																			// first
+				List<CartAssignment> cas = dao.getJPQLParams(CartAssignment.class, sql, cart.getId(), 'A');
+				if (!cas.isEmpty()) {
+					cart.setActiveAssignment(cas.get(0));
+				}
 			}
 			return Response.status(200).entity(carts).build();
 
@@ -348,6 +752,14 @@ public class CartService {
 		}
 	}
 
+	/*
+	 * @SecuredUser
+	 * 
+	 * @GET
+	 * 
+	 * @Path("") public Response requestQuotationAssignment() { //get current }
+	 */
+
 	@SecuredUser
 	@GET
 	@Path("waiting-quotation-carts/assigned-to/{param}")
@@ -360,6 +772,7 @@ public class CartService {
 			List<Cart> carts = dao.getJPQLParams(Cart.class, jpql, 'N', 'Q', 'W', 'R', 'A', userId, 'A', false);
 			for (Cart cart : carts) {
 				prepareCart(cart, authHeader);
+
 			}
 			return Response.status(200).entity(carts).build();
 		} catch (Exception ex) {
@@ -510,8 +923,14 @@ public class CartService {
 				return Response.status(409).build();
 			}
 			this.prepareCart(cart, authHeader);
-			List<CartItem> items = dao.getCondition(CartItem.class, "cartId", cart.getId());
-			cart.setCartItems(items);
+			// add last assignment
+			String sql = "select b from CartAssignment b where b.cartId = :value0 and b.status = :value1 order by b.assignedDate desc";// newest
+																																		// first
+			List<CartAssignment> cas = dao.getJPQLParams(CartAssignment.class, sql, cart.getId(), 'A');
+			if (!cas.isEmpty()) {
+				cart.setActiveAssignment(cas.get(0));
+			}
+
 			return Response.status(200).entity(cart).build();
 		} catch (Exception ex) {
 			ex.getMessage();
@@ -652,7 +1071,6 @@ public class CartService {
 	@Secured
 	@POST
 	@Path("wire-transfer")
-	@Consumes(MediaType.APPLICATION_JSON)
 	public Response createWireTransfer(@HeaderParam("Authorization") String authHeader, PartsOrder partsOrder) {
 		try {
 			// create wire transfer request,
@@ -717,12 +1135,40 @@ public class CartService {
 		}
 	}
 
+	@SecuredUser
+	@POST
+	@Path("addresses/cart-ids")
+	@Produces(MediaType.APPLICATION_JSON)
+	public Response getAddress(@HeaderParam("Authorization") String authHeader, Set<Long> cartIds) {
+		try {
+			List<Map<String, Object>> list = getAddressesFromCartIds(cartIds, authHeader);
+			return Response.status(200).entity(list).build();
+		} catch (Exception ex) {
+			ex.printStackTrace();
+			return Response.status(500).build();
+		}
+	}
+
 	@SuppressWarnings("unchecked")
 	private Map<String, Object> getAddressFromCartId(long cartId, String authHeader) throws Exception {
 		PartsOrder c = dao.findCondition(PartsOrder.class, "cartId", cartId);
 		Response r = this.getSecuredRequest(AppConstants.getAddress(c.getAddressId()), authHeader);
 		if (r.getStatus() == 200) {
 			return r.readEntity(Map.class);
+		} else
+			throw new Exception();
+	}
+
+	private List<Map<String, Object>> getAddressesFromCartIds(Set<Long> cartIds, String authHeader) throws Exception {
+		Set<Long> addressSet = new HashSet<Long>();
+		for (Long l : cartIds) {
+			PartsOrder po = dao.findCondition(PartsOrder.class, "cartId", l);
+			addressSet.add(po.getAddressId());
+		}
+		Response r = this.postSecuredRequest(AppConstants.POST_ADDRESSES_FROM_CART_IDS, addressSet, authHeader);
+		if (r.getStatus() == 200) {
+			return r.readEntity(new GenericType<List<Map<String, Object>>>() {
+			});
 		} else
 			throw new Exception();
 	}
@@ -734,7 +1180,7 @@ public class CartService {
 		try {
 			String jpql = "select count(b) from Cart b where b.status in (:value0, :value1, :value2, :value3, :value4)"
 					+ "and b.id in (select a.cartId from CartAssignment a where a.assignedTo = :value5 and a.status = :value6) and b.noVin = :value7";
-			Long count = dao.findJPQLParams(Long.class, jpql, 'N', 'Q', 'W', 'R', 'A', assignedTo, 'A', false);
+			Long count = dao.findJPQLParams(Long.class, jpql, 'Q', 'Q', 'W', 'R', 'A', assignedTo, 'A', false);
 			return Response.status(200).entity(count).build();
 		} catch (Exception ex) {
 			// log error
@@ -818,7 +1264,7 @@ public class CartService {
 	public Response getTotalNumberWaitingQuotationCarts() {
 		try {
 			String jpql = "select count(b) from Cart b where b.status in (:value0, :value1, :value2, :value3, :value4) and b.noVin = :value5";
-			Long count = dao.findJPQLParams(Long.class, jpql, 'N', 'Q', 'W', 'R', 'A', false);
+			Long count = dao.findJPQLParams(Long.class, jpql, 'Q', 'Q', 'W', 'R', 'A', false);
 			return Response.status(200).entity(count).build();
 		} catch (Exception ex) {
 			// log error
@@ -831,28 +1277,13 @@ public class CartService {
 	@Path("no-vin-notification")
 	public Response getTotalNumberNoVinCarts() {
 		try {
-			String jpql = "select count(b) from Cart b where b.status in (:value0, :value1, :value2, :value3, :value4) and b.noVin =:value5";
-			Long count = dao.findJPQLParams(Long.class, jpql, 'N', 'Q', 'W', 'R', 'A', true);
+			String jpql = "select count(b) from Cart b where b.status in (:value0) and b.noVin =:value1";
+			Long count = dao.findJPQLParams(Long.class, jpql, 'N', true);
 			return Response.status(200).entity(count).build();
 		} catch (Exception ex) {
 			// log error
 			return Response.status(500).build();
 		}
-	}
-
-	@SecuredUser
-	@GET
-	@Path("parts-notification")
-	public Response getNumberPartsCarts() {
-		try {
-			String jpql = "select count(b) from Cart b where b.status in (:value0, :value1, :value2)";
-			Long count = dao.findJPQLParams(Long.class, jpql, 'P', 'V', 'E');
-			return Response.status(200).entity(count).build();
-		} catch (Exception ex) {
-			// log error
-			return Response.status(500).build();
-		}
-
 	}
 
 	@SecuredUser
@@ -898,130 +1329,8 @@ public class CartService {
 		}
 	}
 
-	private List<PartCollectionItem> getCollectionFromPartsApprovedItemsItems(List<PartsOrderItemApproved> approvedList,
-			String authHeader) throws Exception {
-		List<PartCollectionItem> collections = new ArrayList<>();
-		for (PartsOrderItemApproved pApproved : approvedList) {
-			PartCollectionItem col = new PartCollectionItem();
-			String jpql2 = "select b from QuotationVendorItem b where b.id in ("
-					+ "select c.vendorItemId from QuotationItemApproved c where c.id =:value0)";
-			QuotationVendorItem qvi = dao.findJPQLParams(QuotationVendorItem.class, jpql2,
-					pApproved.getQuotationItemApprovedId());
-			col.setCartId(pApproved.getCartId());
-			col.setItemDesc(qvi.getItemDesc());
-			col.setItemNumber(pApproved.getItemNumber());
-			col.setPartsApprovedId(pApproved.getId());
-			col.setQuantity(pApproved.getApprovedQuantity());
-			col.setUnitCost(pApproved.getCostPrice());
-			col.setVendorId(pApproved.getVendorId());
-			col.setQuoted(qvi.getResponded());
-			col.setQuotedBy(qvi.getRespondedBy());
-			col.setQuotedByObject(getVendorUser(qvi.getRespondedBy(), authHeader));
-			col.setCollected(pApproved.getCollected());
-			col.setCollectedBy(pApproved.getCollectedBy());
-			col.setCollectedByObject(getUser(col.getCollectedBy(), authHeader));
-			col.setReceived(pApproved.getReceived());
-			col.setReceivedBy(pApproved.getCollectedBy());
-			col.setReceivedByObject(getUser(col.getReceivedBy(), authHeader));
-			col.setPrepared(pApproved.getPrepared());
-			col.setPreparedBy(pApproved.getPreparedBy());
-			col.setPreparedByObject(this.getVendorUser(pApproved.getPreparedBy(), authHeader));
-			col.setStatus(pApproved.getStatus());
-			collections.add(col);
-		}
-		return collections;
-	}
-
-	@SecuredVendor
-	@GET
-	@Path("/vendor-parts-items/vendor/{vendor}")
-	@Produces(MediaType.APPLICATION_JSON)
-	public Response getVendorPartsItems(@HeaderParam("Authorization") String authHeader,
-			@PathParam(value = "vendor") int vendorId) {
-		try {
-			String jpql = "select b from PartsOrderItemApproved b where b.status in (:value0, :value1) and b.quotationItemApprovedId in ("
-					+ "select c.id from QuotationItemApproved c where c.vendorItemId in ("
-					+ "select d.id from QuotationVendorItem d where d.vendorId = :value2)) and b.cartId not in ("
-					+ "select w.cartId from WireTransfer w where w.status = :value3" + ")";
-			List<PartsOrderItemApproved> approvedList = dao.getJPQLParams(PartsOrderItemApproved.class, jpql, 'W', 'V',
-					vendorId, 'W');
-			List<PartCollectionItem> collections = getCollectionFromPartsApprovedItemsItems(approvedList, authHeader);
-			return Response.status(200).entity(collections).build();
-		} catch (Exception ex) {
-			ex.printStackTrace();
-			return Response.status(500).build();
-		}
-	}
-
-	@SecuredUser
-	@GET
-	@Path("collection-items/cart/{param}")
-	@Produces(MediaType.APPLICATION_JSON)
-	public Response getCartCollectionItem(@HeaderParam("Authorization") String authHeader,
-			@PathParam(value = "param") long cartId) {
-		try {
-
-			List<PartsOrderItemApproved> approvedList = dao.getCondition(PartsOrderItemApproved.class, "cartId",
-					cartId);
-			List<PartCollectionItem> collections = this.getCollectionFromPartsApprovedItemsItems(approvedList,
-					authHeader);
-			return Response.status(200).entity(collections).build();
-		} catch (Exception ex) {
-			return Response.status(500).build();
-		}
-	}
-
-	@SecuredUser
-	@GET
-	@Path("receival-items")
-	@Produces(MediaType.APPLICATION_JSON)
-	public Response getActiveReceivalItems(@HeaderParam("Authorization") String authHeader) {
-		try {
-			String jpql = "select b from PartsOrderItemApproved b where b.status in (:value0, :value1, :value2, :value3) and b.cartId in ("
-					+ "select c from Cart c where c.status in (:value4, :value5, :value6))";
-			List<PartsOrderItemApproved> approvedList = dao.getJPQLParams(PartsOrderItemApproved.class, jpql, 'C', 'R',
-					'V', 'W', 'P', 'V', 'E');
-
-			List<PartCollectionItem> collections = this.getCollectionFromPartsApprovedItemsItems(approvedList,
-					authHeader);
-			Collections.sort(collections, new Comparator<PartCollectionItem>() {
-				@Override
-				public int compare(PartCollectionItem o1, PartCollectionItem o2) {
-					return o1.getCartId().compareTo(o2.getCartId());
-				}
-			});
-			return Response.status(200).entity(collections).build();
-		} catch (Exception ex) {
-			ex.printStackTrace();
-			return Response.status(500).build();
-		}
-
-	}
-
-	@SecuredUser
-	@GET
-	@Path("collection-items")
-	@Produces(MediaType.APPLICATION_JSON)
-	public Response getActiveCollectionItems(@HeaderParam("Authorization") String authHeader) {
-		try {
-			String jpql = "select b from PartsOrderItemApproved b where b.status in (:value0, :value1) and "
-					+ "b.cartId in (select c.id from Cart c where c.status in (:value2, :value3, :value4)";
-			List<PartsOrderItemApproved> approvedList = dao.getJPQLParams(PartsOrderItemApproved.class, jpql, 'W', 'V',
-					'P', 'V', 'E');
-			List<PartCollectionItem> collections = this.getCollectionFromPartsApprovedItemsItems(approvedList,
-					authHeader);
-			Collections.sort(collections, new Comparator<PartCollectionItem>() {
-				@Override
-				public int compare(PartCollectionItem o1, PartCollectionItem o2) {
-					return o1.getVendorId().compareTo(o2.getVendorId());
-				}
-			});
-			return Response.status(200).entity(collections).build();
-		} catch (Exception ex) {
-			return Response.status(500).build();
-		}
-
-	}
+	
+	
 
 	@SecuredVendor
 	@GET
@@ -1069,9 +1378,13 @@ public class CartService {
 						List<QuotationVendorItem> qvis = dao.getCondition(QuotationVendorItem.class, "quotationItemId",
 								qitem.getId());
 						qitem.setVendorItems(qvis);
+						List<QuotationItemResponse> resps = dao.getCondition(QuotationItemResponse.class,
+								"quotationItemId", qitem.getId());
+						qitem.setQuotationItemResponses(resps);
 					}
 				}
 				q.setQuotationItems(qitems);
+
 			}
 			return Response.status(200).entity(quotations).build();
 		} catch (Exception ex) {
@@ -1119,43 +1432,31 @@ public class CartService {
 		}
 	}
 
-	private void createRandomAssignment(String authHeader, long cartId, int assignedBy, char stage) {
-		try {
-			List<Integer> users = getActiveAdvisorIds(authHeader);
-			List<KeyValue> keyValues = new ArrayList<>();
-			for (Integer i : users) {
-				List<CartAssignment> list = dao.getCondition(CartAssignment.class, "assignedTo", i);
-				KeyValue kv = new KeyValue();
-				kv.setKey(i);
-				kv.setValue(list.size());
-				keyValues.add(kv);
-			}
-			Collections.sort(keyValues, new Comparator<KeyValue>() {
-				@Override
-				public int compare(KeyValue o1, KeyValue o2) {
-					return o1.getValue().compareTo(o2.getValue());
-				}
-			});
-
-			Integer userId = keyValues.get(0).getKey();
-
-			// deactivate past assignments
-			String sql = "update crt_assignment set status = 'D' where cart_id = " + cartId + " and status = 'A'";
-			dao.updateNative(sql);
-			// Create new assignment
-			CartAssignment assignment = new CartAssignment();
-			assignment.setAssignedBy(assignedBy);
-			assignment.setAssignedDate(new Date());
-			assignment.setAssignedTo(userId);
-			assignment.setCartId(cartId);
-			assignment.setStage(stage);
-			assignment.setStatus('A');
-			dao.persist(assignment);
-		} catch (Exception ex) {
-			// log error
-
-		}
-	}
+	/*
+	 * private void createRandomAssignment(String authHeader, long cartId, int
+	 * assignedBy, char stage) { try { List<Integer> users =
+	 * getActiveAdvisorIds(authHeader); List<KeyValue> keyValues = new
+	 * ArrayList<>(); for (Integer i : users) { List<CartAssignment> list =
+	 * dao.getCondition(CartAssignment.class, "assignedTo", i); KeyValue kv = new
+	 * KeyValue(); kv.setKey(i); kv.setValue(list.size()); keyValues.add(kv); }
+	 * Collections.sort(keyValues, new Comparator<KeyValue>() {
+	 * 
+	 * @Override public int compare(KeyValue o1, KeyValue o2) { return
+	 * o1.getValue().compareTo(o2.getValue()); } });
+	 * 
+	 * Integer userId = keyValues.get(0).getKey();
+	 * 
+	 * // deactivate past assignments String sql =
+	 * "update crt_assignment set status = 'D' where cart_id = " + cartId +
+	 * " and status = 'A'"; dao.updateNative(sql); // Create new assignment
+	 * CartAssignment assignment = new CartAssignment();
+	 * assignment.setAssignedBy(assignedBy); assignment.setAssignedDate(new Date());
+	 * assignment.setAssignedTo(userId); assignment.setCartId(cartId);
+	 * assignment.setStage(stage); assignment.setStatus('A');
+	 * dao.persist(assignment); } catch (Exception ex) { // log error
+	 * 
+	 * } }
+	 */
 
 	@SecuredUser
 	@POST
@@ -1192,91 +1493,36 @@ public class CartService {
 	}
 
 	@SecuredUser
-	@POST
-	@Path("additional-quotation")
-	@Consumes(MediaType.APPLICATION_JSON)
-	public Response submitAdditionalQuotation(@HeaderParam("Authorization") String authHeader, Quotation qo) {
-		try {
-			qo.setCreated(new Date());
-			// check idempotency
-			if (isQuotationRedudant(qo.getCreatedBy(), qo.getCartId(), qo.getCreated())) {
-				return Response.status(409).build();
-			}
-			qo.setStatus('N');
-			qo.setDeadline(Helper.addDeadline(qo.getCreated()));
-			qo = dao.persistAndReturn(qo);
-			for (QuotationItem item : qo.getQuotationItems()) {
-				item.setCreated(qo.getCreated());
-				item.setStatus('N');
-				item.setQuotationId(qo.getId());
-				item.setCreatedBy(qo.getCreatedBy());
-				item.setCartId(qo.getCartId());
-				dao.persist(item);
-			} // update quotation holder
-			String sql = "update crt_cart set status = 'A' where id = " + qo.getCartId();
-			dao.updateNative(sql);
-
-			// detele approved if exists
-			String sql2 = "delete from crt_quotation_item_approved where cart_id = " + qo.getCartId();
-			dao.updateNative(sql2);
-			// unassingCartReview
-			this.unassignCart(qo.getCartId());
-			// create new assignment
-			this.createRandomAssignment(authHeader, qo.getCartId(), qo.getCreatedBy(), 'A');
-			// postQuotationCreation(qo, authHeader);
-			return Response.status(200).build();
-		} catch (Exception ex) {
-			return Response.status(500).build();
-		}
-	}
-
-	@SecuredUser
-	@PUT
-	@Path("additional-quotation")
-	@Consumes(MediaType.APPLICATION_JSON)
-	public Response updateAdditionalQuotation(@HeaderParam("Authorization") String authHeader, Quotation qo) {
-		try {
-			// update quotation
-			qo.setStatus('W');
-			qo.setDeadline(Helper.addDeadline(qo.getCreated()));
-			dao.update(qo);
-			// delete previous items
-			List<QuotationItem> oldQuotationItems = dao.getCondition(QuotationItem.class, "quotationId", qo.getId());
-			for (QuotationItem qitem : oldQuotationItems) {
-				dao.delete(qitem);
-			}
-			// create new items
-			for (QuotationItem item : qo.getQuotationItems()) {
-				item.setId(0);
-				item.setCreated(qo.getCreated());
-				item.setStatus('W');
-				item.setQuotationId(qo.getId());
-				item.setCreatedBy(qo.getCreatedBy());
-				item.setCartId(qo.getCartId());
-				dao.persist(item);
-			}
-			String sql = "update crt_cart set status = 'W' where id = " + qo.getCartId();
-			dao.updateNative(sql);
-			async.postQuotationCreation(qo, authHeader);
-			return Response.status(200).build();
-			//
-		} catch (Exception ex) {
-			return Response.status(500).build();
-		}
-	}
-
-	@SecuredUser
 	@DELETE
 	@Path("quotation-item/{param}")
-	public Response deleteQuotationItem(@PathParam(value = "param") long qoutationItemId) {
+	public Response deleteQuotationItem(@HeaderParam("Authorization") String authHeader,
+			@PathParam(value = "param") long qoutationItemId) {
 		try {
 			QuotationItem qi = dao.find(QuotationItem.class, qoutationItemId);
 			// delete vendor quotation items,
-			String sql2 = "delete from crt_quotation_vendor_item where quotation_item_id = " + qi.getId();
-			dao.updateNative(sql2);
-			// delete approved
+			List<QuotationVendorItem> qvis = dao.getCondition(QuotationVendorItem.class, "quotationItemId", qi.getId());
+			for (QuotationVendorItem qvi : qvis) {
+				dao.delete(qvi);
+			}
+
+			String jpql = "select b from QuotationItemResponse b where quotationItemId = :value0 and status != :value1";
+			List<QuotationItemResponse> qirs = dao.getJPQLParams(QuotationItemResponse.class, jpql, qi.getId(), 'X');
+			for (QuotationItemResponse qir : qirs) {
+				if (qir.getStatus() == 'C') {
+					async.createFinderScore(qir, "Quotation item deleted", "revising", authHeader, -3);
+				} else if (qir.getStatus() == 'I') {
+					async.createFinderScore(qir, "Quotation item deleted", "revising", authHeader, -2);
+				} else if (qir.getStatus() == 'N') {
+					async.createFinderScore(qir, "Quotation item deleted", "revising", authHeader, 0);
+				}
+				qir.setStatus('X');
+				dao.update(qir);
+			}
+
 			String sql3 = "delete from crt_quotation_item_approved where quotation_item_id = " + qi.getId();
+			String sql4 = "delete from crt_quotation_vendor_item where quotation_item_id = " + qi.getId();
 			dao.updateNative(sql3);
+			dao.updateNative(sql4);
 			dao.delete(qi);
 			verifyQuotationCompletion(qi.getCartId());
 			return Response.status(201).build();
@@ -1289,18 +1535,36 @@ public class CartService {
 	@SecuredUser
 	@DELETE
 	@Path("quotation/{param}")
-	public Response deleteQuotation(@PathParam(value = "param") long qoutationId) {
+	public Response deleteQuotation(@HeaderParam("Authorization") String authHeader,
+			@PathParam(value = "param") long qoutationId) {
 		try {
 			Quotation qo = dao.find(Quotation.class, qoutationId);
 			// delete quotation items,
 			String sql = "delete from crt_quotation_item where quotation_id = " + qo.getId();
 			dao.updateNative(sql);
 			// delete vendor quotation items,
-			String sql2 = "delete from crt_quotation_vendor_item where quotation_id = " + qo.getId();
-			dao.updateNative(sql2);
+			List<QuotationVendorItem> qvis = dao.getCondition(QuotationVendorItem.class, "quotationId", qo.getId());
+			for (QuotationVendorItem qvi : qvis) {
+				dao.delete(qvi);
+			}
 			// delete approved
 			String sql3 = "delete from crt_quotation_item_approved where quotation_id = " + qo.getId();
 			dao.updateNative(sql3);
+
+			// delete quotation items
+			String jpql = "select b from QuotationItemResponse b where quotationId = :value0 and status != :value1";
+			List<QuotationItemResponse> qirs = dao.getJPQLParams(QuotationItemResponse.class, jpql, qo.getId(), 'X');
+			for (QuotationItemResponse qir : qirs) {
+				if (qir.getStatus() == 'C') {
+					async.createFinderScore(qir, "Quotation deleted", "revising", authHeader, -3);
+				} else if (qir.getStatus() == 'I') {
+					async.createFinderScore(qir, "Quotation deleted", "revising", authHeader, -2);
+				} else if (qir.getStatus() == 'N') {
+					async.createFinderScore(qir, "Quotation deleted", "revising", authHeader, 0);
+				}
+				qir.setStatus('X');
+				dao.update(qir);
+			}
 			// delete quotation
 			dao.delete(qo);
 			List<Quotation> qs = dao.getCondition(Quotation.class, "cartId", qo.getCartId());
@@ -1340,7 +1604,87 @@ public class CartService {
 			}
 			String sql = "update crt_cart set status = 'W' where id = " + qo.getCartId();
 			dao.updateNative(sql);
-			// async.postQuotationCreationForFinders(qo, authHeader);
+			async.broadcastToQuotations("update cart," + qo.getCartId());
+//			async.postQuotationCreationForFinders(qo, authHeader);
+			return Response.status(200).build();
+		} catch (Exception ex) {
+			return Response.status(500).build();
+		}
+	}
+
+	@SecuredUser
+	@PUT
+	@Path("additional-quotation")
+	@Consumes(MediaType.APPLICATION_JSON)
+	public Response updateAdditionalQuotation(@HeaderParam("Authorization") String authHeader, Quotation qo) {
+		try {
+			// update quotation
+			qo.setStatus('W');
+			qo.setDeadline(Helper.addDeadline(qo.getCreated()));
+			dao.update(qo);
+			// delete previous items
+			List<QuotationItem> oldQuotationItems = dao.getCondition(QuotationItem.class, "quotationId", qo.getId());
+			for (QuotationItem qitem : oldQuotationItems) {
+				dao.delete(qitem);
+			}
+			// create new items
+			for (QuotationItem item : qo.getQuotationItems()) {
+				item.setId(0);
+				item.setCreated(qo.getCreated());
+				item.setStatus('W');
+				item.setQuotationId(qo.getId());
+				item.setCreatedBy(qo.getCreatedBy());
+				item.setCartId(qo.getCartId());
+				dao.persist(item);
+			}
+			String sql = "update crt_cart set status = 'W' where id = " + qo.getCartId();
+			dao.updateNative(sql);
+			async.broadcastToQuotations("update cart," + qo.getCartId());
+			
+			//if assigned, send to user
+			List<CartAssignment> cas = dao.getTwoConditions(CartAssignment.class, "cartId", "status", qo.getCartId(), 'A');
+			for(CartAssignment ca : cas) {
+				async.sendToQuotingUser("update cart,"+ qo.getCartId(), ca.getAssignedTo());
+			}
+			// async.postQuotationCreation(qo, authHeader);
+			return Response.status(200).build();
+			//
+		} catch (Exception ex) {
+			return Response.status(500).build();
+		}
+	}
+
+	@SecuredUser
+	@POST
+	@Path("additional-quotation")
+	@Consumes(MediaType.APPLICATION_JSON)
+	public Response submitAdditionalQuotation(@HeaderParam("Authorization") String authHeader, Quotation qo) {
+		try {
+			qo.setCreated(new Date());
+			// check idempotency
+			if (isQuotationRedudant(qo.getCreatedBy(), qo.getCartId(), qo.getCreated())) {
+				return Response.status(409).build();
+			}
+			qo.setStatus('N');
+			qo.setDeadline(Helper.addDeadline(qo.getCreated()));
+			qo = dao.persistAndReturn(qo);
+			for (QuotationItem item : qo.getQuotationItems()) {
+				item.setCreated(qo.getCreated());
+				item.setStatus('N');
+				item.setQuotationId(qo.getId());
+				item.setCreatedBy(qo.getCreatedBy());
+				item.setCartId(qo.getCartId());
+				dao.persist(item);
+			}
+			// update quotation holder
+			String sql = "update crt_cart set status = 'A' where id = " + qo.getCartId();
+			// detele approved and vendor items
+			String sql2 = "delete from crt_quotation_item_approved where cart_id = " + qo.getCartId();
+			String sql3 = "delete from crt_quotation_vendor_item where cart_id = " + qo.getCartId();
+			dao.updateNative(sql);
+			dao.updateNative(sql2);
+			dao.updateNative(sql3);
+			async.broadcastToQuotations("edit cart," + qo.getCartId());
 			return Response.status(200).build();
 		} catch (Exception ex) {
 			return Response.status(500).build();
@@ -1361,7 +1705,7 @@ public class CartService {
 			}
 			qo.setStatus('W');
 			qo.setDeadline(Helper.addDeadline(qo.getCreated()));
-			qo = dao.persistAndReturn(qo);
+			dao.persist(qo);
 			for (QuotationItem item : qo.getQuotationItems()) {
 				item.setCreated(qo.getCreated());
 				item.setStatus('W');
@@ -1372,7 +1716,11 @@ public class CartService {
 			} // update quotation holder
 			String sql = "update crt_cart set status = 'W' where id = " + qo.getCartId();
 			dao.updateNative(sql);
-			async.postQuotationCreation(qo, authHeader);
+			List<CartAssignment> cas = dao.getTwoConditions(CartAssignment.class, "cartId", "status", qo.getCartId(), 'A');
+			for(CartAssignment ca : cas) {
+				async.sendToQuotingUser("update cart,"+ qo.getCartId(), ca.getAssignedTo());
+			}
+			async.broadcastToQuotations("update cart,"+ qo.getCartId());
 			return Response.status(200).build();
 		} catch (Exception ex) {
 			return Response.status(500).build();
@@ -1413,42 +1761,6 @@ public class CartService {
 
 			verifyVendorItemsCompletion(qvitem.getQuotationItemId());
 			return Response.status(201).build();
-		} catch (Exception ex) {
-			return Response.status(500).build();
-		}
-	}
-
-	// idempotent
-	@SecuredVendor
-	@Path("quotation-vendor-item")
-	@PUT
-	@Consumes(MediaType.APPLICATION_JSON)
-	public Response submitQuotationVendorItem(@HeaderParam("Authorization") String authHeader,
-			VendorItemContract contract) {
-		try {
-			QuotationVendorItem qvitem = dao.find(QuotationVendorItem.class, contract.getId());
-			if (qvitem.getStatus() != 'W') {
-				return Response.status(409).build();
-			}
-			qvitem.setResponded(new Date());
-			qvitem.setQuantity(contract.getVendorQuantity());
-			qvitem.setItemDesc(contract.getItemDesc());
-			qvitem.setItemCostPrice(contract.getItemCostPrice());
-			qvitem.setItemNumber(contract.getItemNumber().trim().toUpperCase());
-			qvitem.setRespondedBy(contract.getRespondedBy());
-			qvitem.setSalesPercentage(this.getPercentage(contract.getVendorId(), contract.getMakeId(), authHeader));
-			if (qvitem.getQuantity() == 0) {
-				qvitem.setStatus('N');// not available
-			} else {
-				qvitem.setStatus('C');// complete
-			}
-			qvitem.setProductId(findProductId(qvitem, authHeader));
-			dao.update(qvitem);
-			if (qvitem.getStatus() == 'C') {
-				unprocessOtherVendorItems(qvitem);
-			}
-			verifyVendorItemsCompletion(qvitem.getQuotationItemId());
-			return Response.status(200).build();
 		} catch (Exception ex) {
 			return Response.status(500).build();
 		}
@@ -1614,49 +1926,7 @@ public class CartService {
 			throw new Exception();
 	}
 
-	@SecuredUser
-	@GET
-	@Path("quotation-finalized-items/cart/{param}")
-	@Produces(MediaType.APPLICATION_JSON)
-	public Response getFinalizedQuotationItems(@HeaderParam("Authorization") String authHeader,
-			@PathParam(value = "param") long cartId) {
-		try {
-			List<FinalizedItem> finalizedItems = new ArrayList<>();
-			List<QuotationItem> quotations = dao.getCondition(QuotationItem.class, "cartId", cartId);
-			for (QuotationItem qitem : quotations) {
-				FinalizedItem finalized = new FinalizedItem();
-				finalized.setCartId(cartId);
-				finalized.setItemDesc(qitem.getItemDesc());
-				finalized.setQuotationId(qitem.getQuotationId());
-				finalized.setQuotationItemId(qitem.getId());
-				finalized.setRequestedQuantity(qitem.getQuantity());
-				finalized.setResponses(new ArrayList<>());
-				finalized = prepareResponsesSelected(finalized, qitem.getQuantity(), qitem.getId(), authHeader);
-				finalizedItems.add(finalized);
-			}
-			return Response.status(200).entity(finalizedItems).build();
-		} catch (Exception ex) {
-			ex.printStackTrace();
-			return Response.status(500).build();
-		}
-	}
-
-	// idempotent
-	// try to make it async
-	@SecuredUser
-	@POST
-	@Path("approve-quotation")
-	@Consumes(MediaType.APPLICATION_JSON)
-	public Response approveQuotation(@HeaderParam("Authorization") String authHeader, FinalizedItemsHolder holder) {
-		try {
-			async.approveQuotation(authHeader, holder);
-			return Response.status(200).build();
-
-		} catch (Exception ex) {
-			return Response.status(500).build();
-		}
-
-	}
+	
 
 	@SecuredUser
 	@GET
@@ -1848,82 +2118,7 @@ public class CartService {
 		}
 	}
 
-	@SecuredVendor
-	@PUT
-	@Path("vendor-prepare-item")
-	@Consumes(MediaType.APPLICATION_JSON)
-	public Response vendorPrepareItem(PartCollectionItem collection) {
-		try {
-			PartsOrderItemApproved approved = dao.find(PartsOrderItemApproved.class, collection.getPartsApprovedId());
-			approved.setPrepared(new Date());
-			approved.setPreparedBy(collection.getPreparedBy());
-			approved.setStatus('V');
-			dao.update(approved);
-			return Response.status(201).build();
-		} catch (Exception ex) {
-			return Response.status(500).build();
-		}
-	}
-
-	@SecuredUser
-	@PUT
-	@Path("receive-item")
-	@Consumes(MediaType.APPLICATION_JSON)
-	public Response receiveItem(PartCollectionItem collection) {
-		try {
-			PartsOrderItemApproved approved = dao.find(PartsOrderItemApproved.class, collection.getPartsApprovedId());
-			approved.setReceived(new Date());
-			approved.setReceivedBy(collection.getReceivedBy());
-			approved.setStatus('R');
-			dao.update(approved);
-			verifyReceiveCompletion(approved);
-			return Response.status(201).build();
-		} catch (Exception ex) {
-			return Response.status(500).build();
-		}
-	}
-
-	@SecuredUser
-	@PUT
-	@Path("collect-item")
-	@Consumes(MediaType.APPLICATION_JSON)
-	public Response collectItem(PartCollectionItem collection) {
-		try {
-			PartsOrderItemApproved approved = dao.find(PartsOrderItemApproved.class, collection.getPartsApprovedId());
-			approved.setCollected(new Date());
-			approved.setCollectedBy(collection.getCollectedBy());
-			approved.setStatus('C');
-			approved.setItemNumber(collection.getItemNumber().trim().toUpperCase());
-			dao.update(approved);
-			verifyCollectionCompletion(approved);
-			return Response.status(201).build();
-		} catch (Exception ex) {
-			return Response.status(500).build();
-		}
-	}
-
-	private void verifyReceiveCompletion(PartsOrderItemApproved approved) throws Exception {
-		String jpql = "select count(b) from PartsOrderItemApproved b where b.cartId = :value0";
-		Long allApprovedItems = dao.findJPQLParams(Long.class, jpql, approved.getCartId());
-		jpql = jpql + " and b.status in (:value1)";
-		Long collectedItems = dao.findJPQLParams(Long.class, jpql, approved.getCartId(), 'R');// recieved
-		if (allApprovedItems.equals(collectedItems)) {
-			Cart cart = dao.find(Cart.class, approved.getCartId());
-			cart.setStatus('E');// cart ready fro shipment
-			dao.update(cart);
-			// update parts order
-			PartsOrder po = dao.find(PartsOrder.class, approved.getPartsOrderId());
-			po.setStatus('R');// parts ready fir shipment
-			dao.update(po);
-			List<PartsOrderItem> items = dao.getCondition(PartsOrderItem.class, "partsOrderId", po.getId());
-			for (PartsOrderItem item : items) {
-				item.setStatus('R');// part item receieved R = received
-				dao.update(item);
-			}
-
-		}
-	}
-
+	// not used anymore ! make sure
 	@SecuredUser
 	@PUT
 	@Path("ship-items")
@@ -1988,6 +2183,7 @@ public class CartService {
 			}
 			text += " شكرا لكم, نتمنى أن نكون عند حسن ظنكم";
 			// this.sendSms(c.getCustomerId(), cartId, text, "shipped", authHeader);
+
 			return Response.status(201).build();
 		} catch (Exception ex) {
 			ex.printStackTrace();
@@ -2018,91 +2214,7 @@ public class CartService {
 		}
 	}
 
-	@SecuredUser
-	@GET
-	@Path("quotation-finalized-items-full/cart/{param}")
-	@Produces(MediaType.APPLICATION_JSON)
-	public Response getFinalizedQuotationItemsFull(@HeaderParam("Authorization") String authHeader,
-			@PathParam(value = "param") long cartId) {
-		try {
-			List<FinalizedItem> finalizedItems = new ArrayList<>();
-			List<QuotationItem> quotations = dao.getCondition(QuotationItem.class, "cartId", cartId);
-			for (QuotationItem qitem : quotations) {
-				FinalizedItem finalized = new FinalizedItem();
-				finalized.setCartId(cartId);
-				finalized.setItemDesc(qitem.getItemDesc());
-				finalized.setQuotationId(qitem.getQuotationId());
-				finalized.setQuotationItemId(qitem.getId());
-				finalized.setRequestedQuantity(qitem.getQuantity());
-				finalized.setResponses(new ArrayList<>());
-				finalized = prepareResponseFull(finalized, qitem.getId(), authHeader);
-				finalizedItems.add(finalized);
-			}
-			return Response.status(200).entity(finalizedItems).build();
-		} catch (Exception ex) {
-			ex.printStackTrace();
-			return Response.status(500).build();
-		}
-	}
-
-	private FinalizedItem prepareResponseFull(FinalizedItem finalized, long qitemId, String authHeader)
-			throws Exception {
-		List<QuotationVendorItem> vendorItems = dao.getConditionOrderedByTwoColumns(QuotationVendorItem.class,
-				"quotationItemId", qitemId, "itemCostPrice", "responded", "ASC");
-		for (QuotationVendorItem vitem : vendorItems) {
-			FinalizedItemResponse response = new FinalizedItemResponse();
-			response.setPartNumber(vitem.getItemNumber());
-			response.setQuotationVendorItemId(vitem.getId());
-			response.setSalesPercentage(vitem.getSalesPercentage());
-			response.setSubmittedQuantity(vitem.getQuantity());
-			response.setUnitCost(vitem.getItemCostPrice() == null ? 0 : vitem.getItemCostPrice());
-			response.setVendor(getVendor(vitem.getVendorId(), authHeader));
-			// set vendor
-			response.setSelectedQuantity(vitem.getQuantity());
-			finalized.getResponses().add(response);
-		}
-		finalized.setStatus('A');// nothing, for full items! there is no status
-		return finalized;
-	}
-
-	private FinalizedItem prepareResponsesSelected(FinalizedItem finalized, int requested, long qitemId,
-			String authHeader) throws Exception {
-		List<QuotationVendorItem> vendorItems = dao.getConditionOrderedByTwoColumns(QuotationVendorItem.class,
-				"quotationItemId", qitemId, "itemCostPrice", "responded", "ASC");
-		int index = 0;
-		while (requested > 0) {
-			if (index < vendorItems.size()) {
-				QuotationVendorItem vitem = vendorItems.get(index);
-				FinalizedItemResponse response = new FinalizedItemResponse();
-				response.setPartNumber(vitem.getItemNumber());
-				response.setQuotationVendorItemId(vitem.getId());
-				response.setSalesPercentage(vitem.getSalesPercentage());
-				response.setSubmittedQuantity(vitem.getQuantity());
-				response.setUnitCost(vitem.getQuantity() == 0 ? 0 : vitem.getItemCostPrice());
-				response.setVendor(getVendor(vitem.getVendorId(), authHeader));
-				// set vendor
-				response.setSelectedQuantity(vitem.getQuantity());
-				if (vitem.getQuantity() > requested) {
-					response.setSelectedQuantity(requested);
-				}
-				requested = requested - response.getSelectedQuantity();
-				index++;
-				if (response.getSelectedQuantity() > 0) {
-					finalized.getResponses().add(response);
-				}
-			} else {
-				break;
-			}
-		}
-		if (finalized.getResponses().isEmpty()) {
-			finalized.setStatus('N');// No responses
-		} else if (requested == 0) {
-			finalized.setStatus('F');// item fulfilled
-		} else if (requested > 0) {
-			finalized.setStatus('M');// not all quantity fulfilled
-		}
-		return finalized;
-	}
+	
 
 	@SecuredCustomer
 	@GET
@@ -2364,6 +2476,89 @@ public class CartService {
 		}
 	}
 
+	@Secured
+	@POST
+	@Path("parts-order/cash-on-delivery")
+	public Response createCashOnDelivery(@HeaderParam("Authorization") String authHeader,
+			PartsOrderCashOnDelivery pocod) {
+		try {
+			async.payCashOnDelivery(pocod, authHeader);
+			return Response.status(201).build();
+		} catch (Exception ex) {
+			return Response.status(500).build();
+		}
+
+	}
+
+	@SecuredUser
+	@POST
+	@Path("parts-order/credit-sales")
+	public Response createCreditSales(@HeaderParam("Authorization") String authHeader, PartsOrderCreditSales pocs) {
+		try {
+			async.payCreditSales(pocs, authHeader);
+			return Response.status(201).build();
+		} catch (Exception ex) {
+			return Response.status(500).build();
+		}
+	}
+
+	@SecuredCustomer
+	@POST
+	@Path("parts-order/credit-card")
+	@Consumes(MediaType.APPLICATION_JSON)
+	public Response submitPartsOrder2(@HeaderParam("Authorization") String authHeader, PartsOrderCreditCard pocc) {
+		try {
+			async.payCreditCard(pocc, authHeader);
+			return Response.status(201).build();
+		} catch (Exception ex) {
+			return Response.status(500).build();
+		}
+	}
+
+	private void createPartsApprovedItem(PartsOrderItem poi, PartsOrder partsOrder, int q) {
+		String jpql = "select b from QuotationItemApproved b where quotationItemId = :value0 order by unitCost, created";
+		List<QuotationItemApproved> qApprovedItems = dao.getJPQLParams(QuotationItemApproved.class, jpql,
+				poi.getQuotationItemId());
+		int index = 0;
+		while (q > 0) {
+			PartsOrderItemApproved approved = new PartsOrderItemApproved();
+			approved.setCartId(partsOrder.getCartId());
+			approved.setPartsOrderId(partsOrder.getId());
+			approved.setPartsItemId(poi.getId());
+			approved.setSalesPrice(poi.getSalesPrice());
+			if (q > qApprovedItems.get(index).getQuantity()) {
+				approved.setApprovedQuantity(qApprovedItems.get(index).getQuantity());
+			} else {
+				approved.setApprovedQuantity(q);
+			}
+
+			QuotationVendorItem qvi = dao.find(QuotationVendorItem.class, qApprovedItems.get(index).getVendorItemId());
+			approved.setVendorId(qvi.getVendorId());
+			approved.setItemNumber(qvi.getItemNumber());
+			approved.setCostPrice(qApprovedItems.get(index).getUnitCost());
+			approved.setQuotationItemApprovedId(qApprovedItems.get(index).getId());
+			approved.setStatus('W');
+			approved.setProductId(qvi.getProductId());
+			dao.persist(approved);
+			q = q - approved.getApprovedQuantity();
+			index++;
+		}
+
+	}
+
+	private long getAddressId(PartsOrder partsOrder, String authHeader) {
+		if (partsOrder.getAddressId() != 0) {
+			return partsOrder.getAddressId();
+		} else {
+			Response r = this.postSecuredRequest(AppConstants.CREATE_CUSTOMER_ADDRESS, partsOrder.getAddress(),
+					authHeader);
+			if (r.getStatus() == 200) {
+				return r.readEntity(Long.class);
+			} else
+				return 0;
+		}
+	}
+
 	@SecuredUser
 	@GET
 	@Path("parts-order/cart/{cartId}")
@@ -2545,6 +2740,29 @@ public class CartService {
 
 	@SecuredUser
 	@PUT
+	@Path("refund-cart")
+	@Consumes(MediaType.APPLICATION_JSON)
+	public Response refundCart(@HeaderParam("Authorization") String authHeader, Long cartId) {
+		try {
+			Cart cart = dao.find(Cart.class, cartId);// return cart to S
+			cart.setStatus('S');// return to S
+			dao.update(cart);
+			String sql = "delete from crt_parts_order where cart_id = " + cartId;
+			String sql2 = "delete from crt_parts_item where cart_id = " + cartId;
+			String sql3 = "delete from crt_parts_item_approved where cart_id = " + cartId;
+			String sql4 = "delete from crt_wire_transfer where cart_id = " + cartId;
+			dao.updateNative(sql);
+			dao.updateNative(sql2);
+			dao.updateNative(sql3);
+			dao.updateNative(sql4);
+			return Response.status(201).build();
+		} catch (Exception ex) {
+			return Response.status(500).build();
+		}
+	}
+
+	@SecuredUser
+	@PUT
 	@Path("wire-transfer/confirm")
 	@Consumes(MediaType.APPLICATION_JSON)
 	public Response confirmWireTransfer(@HeaderParam("Authorization") String authHeader, Map<String, Object> map) {
@@ -2552,7 +2770,7 @@ public class CartService {
 			Long cartId = ((Number) map.get("cartId")).longValue();
 			Long wireId = ((Number) map.get("wireId")).longValue();
 			Integer confirmedBy = (Integer) map.get("confirmedBy");
-			
+
 			WireTransfer wt = dao.find(WireTransfer.class, wireId);
 			wt.setStatus('P');
 			wt.setConfirmed(new Date());
@@ -2571,6 +2789,7 @@ public class CartService {
 		}
 	}
 
+	// to be deprecated
 	@SecuredUser
 	@PUT
 	@Path("confirm-wire-transfer")
@@ -2595,64 +2814,6 @@ public class CartService {
 
 	@SecuredUser
 	@GET
-	@Path("unassigned-carts")
-	@Produces(MediaType.APPLICATION_JSON)
-	public Response getUnassignedCarts(@HeaderParam("Authorization") String authHeader) {
-		try {
-			String jpql = "select b from Cart b where b.status in (:value0, :value1, :value2 , :value3, :value4) and b.id not in ("
-					+ "select a.cartId from CartAssignment a where a.status = :value5) order by b.id";
-			List<Cart> carts = dao.getJPQLParams(Cart.class, jpql, 'N', 'Q', 'W', 'R', 'A', 'A');
-			for (Cart cart : carts) {
-				cart.setCustomer(this.getCustomer(cart.getCustomerId(), authHeader));
-				cart.setModelYear(this.getModelYearObjectFromId(cart.getVehicleYear(), authHeader));
-			}
-			return Response.status(200).entity(carts).build();
-		} catch (Exception ex) {
-			ex.printStackTrace();
-			return Response.status(500).build();
-		}
-	}
-
-	@SecuredUser
-	@GET
-	@Path("advisor-quotation-carts")
-	@Produces(MediaType.APPLICATION_JSON)
-	public Response getAdvisorQuotationCarts(@HeaderParam("Authorization") String authHeader) {
-		try {
-			String jpql = "select distinct b.assignedTo from CartAssignment b where b.status = :value0 and b.cartId in ("
-					+ "select c.id from Cart c where c.status in (:value1, :value2, :value3, :value4, :value5))";
-			List<Integer> userIds = dao.getJPQLParams(Integer.class, jpql, 'A', 'N', 'Q', 'W', 'R', 'A');
-			// get active advisors
-			List<Integer> otherIds = getActiveAdvisorIds(authHeader);
-			for (Integer i : otherIds) {
-				if (!userIds.contains(i)) {
-					userIds.add(i);
-				}
-			}
-
-			List<AdvisorCarts> advisorCarts = new ArrayList<>();
-			for (Integer userId : userIds) {
-				AdvisorCarts advisorCart = new AdvisorCarts();
-				String jpql2 = "select b from Cart b where b.status in (:value0, :value1, :value2, :value3, :value4) and b.id in ("
-						+ "select c.cartId from CartAssignment c where c.status = :value5 and c.assignedTo = :value6) order by b.id";
-				List<Cart> carts = dao.getJPQLParams(Cart.class, jpql2, 'N', 'Q', 'W', 'R', 'A', 'A', userId);
-				for (Cart cart : carts) {
-					prepareCart(cart, authHeader);
-				}
-				Map<String, Object> user = this.getUser(userId.intValue(), authHeader);
-				advisorCart.setUser(user);
-				advisorCart.setCarts(carts);
-				advisorCarts.add(advisorCart);
-			}
-			return Response.status(200).entity(advisorCarts).build();
-		} catch (Exception ex) {
-			ex.printStackTrace();
-			return Response.status(500).build();
-		}
-	}
-
-	@SecuredUser
-	@GET
 	@Path("quotation-carts/assigned-to/{param}")
 	@Produces(MediaType.APPLICATION_JSON)
 	public Response getAdvisorQuotationCarts(@PathParam(value = "param") int assignedTo) {
@@ -2666,46 +2827,9 @@ public class CartService {
 		}
 	}
 
-	@SecuredUser
-	@PUT
-	@Path("unassign-cart")
-	@Consumes(MediaType.APPLICATION_JSON)
-	public Response unassignCart(Cart cart) {
-		try {
-			unassignCart(cart.getId());
-			return Response.status(201).build();
-		} catch (Exception ex) {
-			return Response.status(500).build();
-		}
-	}
-
-	private void unassignCart(long cartId) {
-		List<CartAssignment> ass = dao.getCondition(CartAssignment.class, "cartId", cartId);
-		for (CartAssignment c : ass) {
-			c.setStatus('D');
-			dao.update(c);
-		}
-	}
-
-	@SecuredUser
-	@POST
-	@Path("assign-cart")
-	@Consumes(MediaType.APPLICATION_JSON)
-	public Response assignCart(CartAssignment assignment) {
-		try {
-			// deactivte previous assignments for this cart combo
-			List<CartAssignment> ass = dao.getCondition(CartAssignment.class, "cartId", assignment.getCartId());
-			for (CartAssignment c : ass) {
-				c.setStatus('D');
-				dao.update(c);
-			}
-			assignment.setStatus('A');
-			assignment.setAssignedDate(new Date());
-			dao.persist(assignment);
-			return Response.status(201).build();
-		} catch (Exception ex) {
-			return Response.status(500).build();
-		}
+	private void setAllCartReviews(Cart cart) {
+		List<CartReview> reviews = dao.getConditionOrdered(CartReview.class, "cartId", cart.getId(), "created", "asc");
+		cart.setReviews(reviews);
 	}
 
 	@SecuredUser
@@ -2769,6 +2893,7 @@ public class CartService {
 				cart.setSubmitteBy(review.getReviewerId());
 				cart.setSubmitted(new Date());
 				dao.update(cart);
+				async.broadcastToQuotations("archive cart," + cart.getId());
 			}
 			return Response.status(200).build();
 		} catch (Exception ex) {

@@ -26,7 +26,7 @@ public class AuthenticatorAll implements ContainerRequestFilter {
 
 
 	@EJB
-	private DAO dao;  
+	private DAO dao;
 
 	@Override
 	public void filter(ContainerRequestContext requestContext) throws IOException {
@@ -55,7 +55,7 @@ public class AuthenticatorAll implements ContainerRequestFilter {
 		AccessMap map = new AccessMap(username, appSecret, token, "");
 		String link ="";
 		if(type.equals("C")){
-		 	link = AppConstants.CUSTOMER_MATCH_TOKEN;
+			link = AppConstants.CUSTOMER_MATCH_TOKEN;
 		}
 		else if (type.equals("U")){
 			link = AppConstants.USER_MATCH_TOKEN;
@@ -68,7 +68,7 @@ public class AuthenticatorAll implements ContainerRequestFilter {
 			throw new NotAuthorizedException("Request authorization failed");
 		}
 	}
-	
+
 	public <T> Response postSecuredRequest(String link, T t, String authHeader) {
 		Builder b = ClientBuilder.newClient().target(link).request();
 		b.header(HttpHeaders.AUTHORIZATION, authHeader);
