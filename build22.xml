@@ -21,6 +21,9 @@
         <pathelement location="/opt/wildfly/modules/system/layers/base/org/jboss/resteasy/resteasy-client-microprofile//main/resteasy-client-microprofile-3.14.0.Final.jar"/>
         <pathelement location="/opt/wildfly/modules/system/layers/base/org/jboss/resteasy/resteasy-jaxrs/main/resteasy-jaxrs-3.14.0.Final.jar"/>
         <pathelement location="/opt/wildfly/modules/system/layers/base/org/jboss/resteasy/resteasy-multipart-provider/main/resteasy-multipart-provider-3.14.0.Final.jar"/>
+        <pathelement location="/opt/wildfly/modules/system/layers/base/org/picketbox/main/picketbox-5.0.3.Final-redhat-00007.jar"/>
+        <pathelement location="/opt/wildfly/modules/system/layers/base/org/picketbox/main/picketbox-commons-1.0.0.final.jar"/>
+        <pathelement location="/opt/wildfly/modules/system/layers/base/org/picketbox/main/picketbox-infinispan-5.0.3.Final-redhat-00007.jar"/>
     </path>
 
     <path id="library.app.classpath">
